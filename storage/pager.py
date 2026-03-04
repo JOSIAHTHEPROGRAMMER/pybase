@@ -1,5 +1,3 @@
-# pybase/storage/pager.py
-
 import os
 from .serializer import Serializer
 

@@ -43,6 +43,10 @@ class Table:
             raise ValueError(f"Column '{column_name}' does not exist.")
 
         self.unique_columns.add(column_name)
+        
+        # Auto-persist schema whenever constraints change
+        self.schema_manager.write(self.columns, self.unique_columns)
+
 
     def insert(self, row: list):
         if len(row) != len(self.columns):
@@ -155,3 +159,134 @@ class Table:
             )
 
         return projected_rows
+    
+
+    def delete(self, conditions: list):
+        """
+        Delete all rows matching ALL conditions (AND logic).
+        conditions: list of (column, operator, value) tuples
+
+        Returns the number of rows deleted.
+        """
+        if not conditions:
+            raise ValueError(
+                "DELETE requires at least one WHERE condition. "
+                "Full table deletes are not supported yet."
+            )
+
+        column_index = {name: i for i, (name, _) in enumerate(self.columns)}
+
+        # Validate condition columns exist
+        for column, _, _ in conditions:
+            if column not in column_index:
+                raise ValueError(f"Column '{column}' does not exist.")
+
+        surviving_rows = []
+        deleted_count = 0
+
+        for row in self.rows:
+            match = True
+
+            for column, operator, value in conditions:
+                idx = column_index[column]
+                cell_value = row[idx]
+
+                if operator == "=" and not (cell_value == value):
+                    match = False
+                elif operator == ">" and not (cell_value > value):
+                    match = False
+                elif operator == "<" and not (cell_value < value):
+                    match = False
+
+            if match:
+                deleted_count += 1
+            else:
+                surviving_rows.append(row)
+
+        # Only touch disk if something actually changed
+        if deleted_count > 0:
+            self.rows = surviving_rows
+            self.pager.rewrite_all_rows(surviving_rows)
+
+        return deleted_count
+    
+    def update(self, assignments: list, conditions: list):
+        """
+        Update columns in rows matching all conditions.
+
+        assignments: list of (column, value) tuples — what to change
+        conditions:  list of (column, operator, value) tuples — which rows
+
+        Returns the number of rows updated.
+        """
+        if not conditions:
+            raise ValueError(
+                "UPDATE requires at least one WHERE condition. "
+                "Full table updates are not supported yet."
+            )
+
+        column_index = {name: i for i, (name, _) in enumerate(self.columns)}
+        column_types = {name: ctype for name, ctype in self.columns}
+
+        # Validate assignment columns and types up front
+        for col, value in assignments:
+            if col not in column_index:
+                raise ValueError(f"Column '{col}' does not exist.")
+
+            expected_type = self.SUPPORTED_TYPES[column_types[col]]
+            if not isinstance(value, expected_type):
+                raise TypeError(
+                    f"Column '{col}' expects type '{column_types[col]}', "
+                    f"but got '{type(value).__name__}'."
+                )
+
+        # Validate condition columns exist
+        for col, _, _ in conditions:
+            if col not in column_index:
+                raise ValueError(f"Column '{col}' does not exist.")
+
+        updated_count = 0
+        updated_rows = []
+
+        for row in self.rows:
+            # Check if this row matches all conditions
+            match = True
+
+            for column, operator, value in conditions:
+                idx = column_index[column]
+                cell_value = row[idx]
+
+                if operator == "=" and not (cell_value == value):
+                    match = False
+                elif operator == ">" and not (cell_value > value):
+                    match = False
+                elif operator == "<" and not (cell_value < value):
+                    match = False
+
+            if match:
+                # Apply assignments to a copy of the row
+                new_row = list(row)
+
+                for col, value in assignments:
+                    # Enforce UNIQUE constraints on updated value
+                    if col in self.unique_columns:
+                        idx = column_index[col]
+                        for existing_row in self.rows:
+                            if existing_row[idx] == value and existing_row != row:
+                                raise ValueError(
+                                    f"Duplicate value for UNIQUE column '{col}'."
+                                )
+
+                    new_row[column_index[col]] = value
+
+                updated_rows.append(new_row)
+                updated_count += 1
+            else:
+                updated_rows.append(row)
+
+        # Only touch disk if something actually changed
+        if updated_count > 0:
+            self.rows = updated_rows
+            self.pager.rewrite_all_rows(updated_rows)
+
+        return updated_count

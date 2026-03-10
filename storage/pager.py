@@ -53,3 +53,13 @@ class Pager:
                 row = Serializer.deserialize_row(chunk, self.columns)
                 rows.append(row)
         return rows
+    
+    def rewrite_all_rows(self, rows: list):
+        """
+        Overwrite the entire .db file with the given rows.
+        Used after deletions. Simple but correct — optimization comes later.
+        """
+        with open(self.file_path, "wb") as f:
+            for row in rows:
+                data = Serializer.serialize_row(row, self.columns)
+                f.write(data)

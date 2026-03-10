@@ -95,6 +95,93 @@ def parse_select(command: str):
         table_name = rest.strip()
         return table_name, selected_columns, []
 
+# Example: DELETE FROM users WHERE id = 1;
+def parse_delete(command: str):
+    """
+    Parse a DELETE FROM command and return table name and conditions.
+    DELETE requires a WHERE clause — no blind full-table deletes.
+    """
+    command = command.strip().rstrip(";")
+    _, _, rest = command.partition("FROM")
+
+    if "WHERE" not in rest.upper():
+        raise ValueError("DELETE requires a WHERE clause.")
+
+    table_part, _, where_part = rest.partition("WHERE")
+    table_name = table_part.strip()
+
+    conditions = []
+
+    for condition in where_part.split("AND"):
+        condition = condition.strip()
+
+        for op in ["=", ">", "<"]:
+            if op in condition:
+                column, value = condition.split(op)
+                column = column.strip()
+                value = value.strip()
+
+                if value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+                else:
+                    value = int(value)
+
+                conditions.append((column, op, value))
+                break
+
+    return table_name, conditions
+
+# Example: UPDATE users SET name = 'Alice2' WHERE id = 1;
+def parse_update(command: str):
+    """
+    Parse an UPDATE command and return table name, assignments, and conditions.
+    """
+    command = command.strip().rstrip(";")
+
+    # Split off the table name
+    _, _, rest = command.partition("UPDATE")
+    table_part, _, set_rest = rest.strip().partition("SET")
+    table_name = table_part.strip()
+
+    if "WHERE" not in set_rest.upper():
+        raise ValueError("UPDATE requires a WHERE clause.")
+
+    set_part, _, where_part = set_rest.partition("WHERE")
+
+    # Parse SET assignments: "name = 'Alice2', age = 30"
+    assignments = []
+    for assignment in set_part.split(","):
+        col, _, value = assignment.partition("=")
+        col = col.strip()
+        value = value.strip()
+
+        if value.startswith("'") and value.endswith("'"):
+            value = value[1:-1]
+        else:
+            value = int(value)
+
+        assignments.append((col, value))
+
+    # Parse WHERE conditions (reuse same logic as SELECT/DELETE)
+    conditions = []
+    for condition in where_part.split("AND"):
+        condition = condition.strip()
+
+        for op in ["=", ">", "<"]:
+            if op in condition:
+                column, value = condition.split(op)
+                column = column.strip()
+                value = value.strip()
+
+                if value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+                else:
+                    value = int(value)
+
+                conditions.append((column, op, value))
+                break
+
+    return table_name, assignments, conditions
 
 def main():
     print("Welcome to PyBase CLI! Type 'exit' to quit.")
@@ -110,8 +197,7 @@ def main():
                 for col in unique_columns:
                     table.add_unique_constraint(col)
 
-                table.schema_manager.write(table.columns, table.unique_columns)
-
+               
 
                 print(f"Table '{table_name}' created successfully!")
 
@@ -130,7 +216,22 @@ def main():
 
                 for r in rows:
                     print(r)
+            
+            elif command.upper().startswith("DELETE FROM"):
+                table_name, conditions = parse_delete(command)
+                table = db.get_table(table_name)
+                deleted_count = table.delete(conditions)
+                print(f"{deleted_count} row(s) deleted from '{table_name}'.")
+          
 
+
+            elif command.upper().startswith("UPDATE"):
+                table_name, assignments, conditions = parse_update(command)
+                table = db.get_table(table_name)
+                updated_count = table.update(assignments, conditions)
+                print(f"{updated_count} row(s) updated in '{table_name}'.")
+
+                
             else:
                 print("Unsupported command.")
 

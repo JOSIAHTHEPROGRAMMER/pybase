@@ -1,18 +1,31 @@
-from ..storage.pager import Pager
+from storage.pager import Pager
+from storage.schema_manager import SchemaManager
+
 
 class Table:
     SUPPORTED_TYPES = {"int": int, "string": str}
 
-    def __init__(self, name: str, columns: list[tuple[str, str]]):
+    def __init__(self, name: str, columns: list[tuple[str, str]], unique_columns: set = None):
         """
-        Initialize a table with a name, schema, and persistent storage.
+        Initialize a table. If unique_columns is provided, this is a
+        fresh creation — persist schema. Otherwise, schema was already written.
         """
         self.name = name
         self.columns = columns
-        self.pager = Pager(name, columns)  # handle disk persistence
+        self.schema_manager = SchemaManager(name)
+        self.pager = Pager(name, columns)
         self._validate_schema()
-        self.rows = self.pager.load_all_rows()  # load persisted rows
-        self.unique_columns = set()
+        self.rows = self.pager.load_all_rows()
+
+        # Restore or initialize unique constraints
+        if unique_columns is not None:
+            # Fresh table creation — persist schema now
+            self.unique_columns = unique_columns
+            self.schema_manager.write(self.columns, self.unique_columns)
+        else:
+            # Reopening existing table — load constraints from disk
+            schema = self.schema_manager.read()
+            self.unique_columns = set(schema.get("unique_columns", []))
 
     def _validate_schema(self):
         """

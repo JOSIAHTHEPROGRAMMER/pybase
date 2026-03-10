@@ -1,4 +1,4 @@
-from .core.database import Database
+from core.database import Database
 
 db = Database()
 
@@ -109,6 +109,9 @@ def main():
 
                 for col in unique_columns:
                     table.add_unique_constraint(col)
+
+                table.schema_manager.write(table.columns, table.unique_columns)
+
 
                 print(f"Table '{table_name}' created successfully!")
 

@@ -57,7 +57,7 @@ class Pager:
     def rewrite_all_rows(self, rows: list):
         """
         Overwrite the entire .db file with the given rows.
-        Used after deletions. Simple but correct — optimization comes later.
+        Used after deletions. Simple but correct - optimization comes later.
         """
         with open(self.file_path, "wb") as f:
             for row in rows:

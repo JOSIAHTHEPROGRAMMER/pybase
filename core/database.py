@@ -33,7 +33,7 @@ class Database:
         if name in self.tables:
             raise ValueError(f"Table '{name}' already exists.")
 
-        # Pass empty set — schema will be written by Table.__init__
+        # Pass empty set - schema will be written by Table.__init__
         # Constraints are added afterward via add_unique_constraint()
         table = Table(name, columns, unique_columns=set())
         self.tables[name] = table
@@ -43,3 +43,26 @@ class Database:
         if name not in self.tables:
             raise ValueError(f"Table '{name}' does not exist.")
         return self.tables[name]
+    
+
+    def drop_table(self, name: str):
+        """
+        Remove a table entirely — from memory and from disk.
+        Deletes both the .db row file and .schema metadata file.
+        Raises if the table doesn't exist.
+        """
+        if name not in self.tables:
+            raise ValueError(f"Table '{name}' does not exist.")
+
+        table = self.tables[name]
+
+        # Remove row data file from disk
+        if os.path.exists(table.pager.file_path):
+            os.remove(table.pager.file_path)
+
+        # Remove schema metadata file from disk
+        if os.path.exists(table.schema_manager.schema_path):
+            os.remove(table.schema_manager.schema_path)
+
+        # Remove from in-memory registry
+        del self.tables[name]

@@ -22,13 +22,15 @@ class SchemaManager:
         if not os.path.exists(folder):
             os.makedirs(folder)
 
-    def write(self, columns: list[tuple[str, str]], unique_columns: set):
+    def write(self, columns: list[tuple[str, str]], unique_columns: set, primary_key: str = None, indexes=None):
         """
         Persist schema to disk. Called once at table creation.
         """
         schema = {
             "columns": [list(col) for col in columns],
             "unique_columns": list(unique_columns),
+            "primary_key": primary_key,
+            "indexes": indexes or [],
         }
         with open(self.schema_path, "w") as f:
             json.dump(schema, f, indent=2)

@@ -109,6 +109,11 @@ python -m gui.main
 
 ---
 
+### Preview
+
+<img src="images/pybase.jpg"/>
+
+
 ## Supported SQL Syntax
 
 ### DDL

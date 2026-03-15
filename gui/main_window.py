@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QSplitter
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter
 )
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPalette, QColor
 
 from core.database import Database
 from gui.panels.editor import EditorPanel
@@ -9,28 +10,78 @@ from gui.panels.results import ResultsPanel
 from gui.panels.schema import SchemaPanel
 from gui.widgets.status_bar import TransactionStatusBar
 
+# Neon-inspired dark palette
+BACKGROUND     = "#0f0f0f"
+PANEL          = "#1a1a1a"
+BORDER         = "#2e2e2e"
+ACCENT         = "#00e599"
+TEXT_PRIMARY   = "#ededed"
+TEXT_MUTED     = "#a0a0a0"
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PyBase")
-        self.setMinimumSize(1100, 700)
+        self.setMinimumSize(1200, 750)
+        self._apply_global_style()
 
         # Single shared Database instance - all panels talk to this
         self.db = Database()
-
         self._build_ui()
 
+    def _apply_global_style(self):
+        """
+        Apply a global dark stylesheet to the entire application window.
+        Individual panels inherit this and override where needed.
+        """
+        self.setStyleSheet(f"""
+            QMainWindow, QWidget {{
+                background-color: {BACKGROUND};
+                color: {TEXT_PRIMARY};
+                font-family: 'Inter', 'Segoe UI', sans-serif;
+                font-size: 13px;
+            }}
+            QSplitter::handle {{
+                background-color: {BORDER};
+            }}
+            QScrollBar:vertical {{
+                background: {PANEL};
+                width: 8px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: #444;
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+            QScrollBar:horizontal {{
+                background: {PANEL};
+                height: 8px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: #444;
+                border-radius: 4px;
+            }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                width: 0px;
+            }}
+        """)
+
     def _build_ui(self):
-        # Central widget holds the entire layout
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(8, 8, 8, 4)
-        root_layout.setSpacing(4)
+        root_layout.setContentsMargins(10, 10, 10, 6)
+        root_layout.setSpacing(6)
 
         # Main horizontal splitter: schema browser | editor + results
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.setHandleWidth(1)
 
         # Left panel - schema browser
         self.schema_panel = SchemaPanel(self.db)
@@ -40,11 +91,11 @@ class MainWindow(QMainWindow):
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(4)
+        right_layout.setSpacing(6)
 
         right_splitter = QSplitter(Qt.Orientation.Vertical)
+        right_splitter.setHandleWidth(1)
 
-        # Editor panel - takes db and a callback to refresh schema after DDL
         self.editor_panel = EditorPanel(
             self.db,
             on_result=self._on_query_result,
@@ -53,18 +104,13 @@ class MainWindow(QMainWindow):
         )
         right_splitter.addWidget(self.editor_panel)
 
-        # Results panel
         self.results_panel = ResultsPanel()
         right_splitter.addWidget(self.results_panel)
 
-        # Give editor ~35% height, results ~65%
-        right_splitter.setSizes([220, 450])
-
+        right_splitter.setSizes([240, 460])
         right_layout.addWidget(right_splitter)
         main_splitter.addWidget(right_widget)
-
-        # Give schema browser ~20% width, editor+results ~80%
-        main_splitter.setSizes([220, 880])
+        main_splitter.setSizes([240, 960])
 
         root_layout.addWidget(main_splitter)
 

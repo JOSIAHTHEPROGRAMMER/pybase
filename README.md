@@ -1,24 +1,29 @@
 # PyBase
 
-PyBase is a minimal relational database engine built from scratch in Python. It implements real database internals - custom storage, B-Tree indexing, schema persistence, constraints, and transactions - without any external libraries.
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat)
+![Tests](https://img.shields.io/badge/Tests-67%20passing-brightgreen?style=flat)
+![GUI](https://img.shields.io/badge/GUI-PyQt6-41CD52?style=flat&logo=qt&logoColor=white)
+![Storage](https://img.shields.io/badge/Storage-Binary%20%2B%20JSON-orange?style=flat)
 
-Built as a serious systems-level learning project, with a GUI client planned.
+PyBase is a minimal relational database engine built from scratch in Python. It implements real database internals -custom binary storage, B-Tree indexing, schema persistence, constraints, and transactions -without any external libraries.
 
 ---
 
 ## Features
 
-- **Full CRUD** - `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TABLE`
-- **SQL-like syntax** - case-insensitive keywords, familiar query structure
-- **File-based persistence** - rows stored in binary `.db` files, schema in `.schema` JSON files
-- **Schema persistence** - table definitions, constraints, and indexes survive restarts
-- **B-Tree indexing** - `CREATE INDEX` for O(log n) equality lookups
-- **Column constraints** - `PRIMARY KEY`, `UNIQUE`, NOT NULL enforcement
-- **Rich WHERE clauses** - `=`, `!=`, `>`, `>=`, `<`, `<=` with `AND` support
-- **Column projection** - `SELECT name, id FROM ...` or `SELECT *`
-- **ORDER BY** - `ASC` and `DESC` on any column
-- **LIMIT** - cap result set size
-- **Transactions** - `BEGIN`, `COMMIT`, `ROLLBACK` with operation buffering
+- **Full CRUD** -`CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TABLE`
+- **SQL-like syntax** -case-insensitive keywords and column names
+- **File-based persistence** -rows stored in binary `.db` files, schema in `.schema` JSON files
+- **Schema persistence** -table definitions, constraints, and indexes survive restarts
+- **B-Tree indexing** -`CREATE INDEX` for O(log n) equality lookups
+- **Column constraints** -`PRIMARY KEY`, `UNIQUE`, NOT NULL enforcement
+- **Rich WHERE clauses** -`=`, `!=`, `>`, `>=`, `<`, `<=` with `AND` support
+- **Column projection** -`SELECT name, id FROM ...` or `SELECT *`
+- **ORDER BY** -`ASC` and `DESC` on any column
+- **LIMIT** -cap result set size
+- **Transactions** -`BEGIN`, `COMMIT`, `ROLLBACK` with operation buffering
+- **Desktop GUI** -built with PyQt6, includes SQL editor, results table, schema browser, and transaction status
 
 ---
 
@@ -30,7 +35,19 @@ pybase/
 │   ├── __init__.py
 │   ├── database.py         # Database registry, table lifecycle, transaction management
 │   ├── table.py            # Table operations, constraint enforcement, query execution
-│   └── transaction.py      # Transaction buffer - BEGIN / COMMIT / ROLLBACK
+│   └── transaction.py      # Transaction buffer -BEGIN / COMMIT / ROLLBACK
+├── gui/
+│   ├── __init__.py
+│   ├── main.py             # QApplication entry point
+│   ├── main_window.py      # MainWindow -assembles all panels
+│   ├── panels/
+│   │   ├── __init__.py
+│   │   ├── editor.py       # SQL editor + run button
+│   │   ├── results.py      # Results table
+│   │   └── schema.py       # Schema browser
+│   └── widgets/
+│       ├── __init__.py
+│       └── status_bar.py   # Transaction status indicator
 ├── query/
 │   └── __init__.py         # Reserved for future query planner / optimizer
 ├── storage/
@@ -40,6 +57,8 @@ pybase/
 │   ├── pager.py            # Binary row file read/write
 │   ├── schema_manager.py   # JSON schema persistence per table
 │   └── serializer.py       # Row serialization to/from bytes
+├── tests/
+│   └── test_pybase.py      # Full test suite -67 tests
 ├── __init__.py
 ├── .gitignore
 ├── cli.py                  # SQL parser and REPL entry point
@@ -59,6 +78,7 @@ pybase/
 | `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                 |
 | `storage/btree.py`          | Sorted key-value tree with O(log n) search                    |
 | `storage/index_manager.py`  | Create, rebuild, and query B-Tree indexes                     |
+| `gui/`                      | PyQt6 desktop interface -editor, results, schema browser      |
 
 ---
 
@@ -67,13 +87,24 @@ pybase/
 ### Requirements
 
 - Python 3.10+
-- No external libraries
+- PyQt6 (GUI only)
 
-### Run
+```bash
+pip install PyQt6
+```
+
+### Run CLI
 
 ```bash
 cd pybase
 python cli.py
+```
+
+### Run GUI
+
+```bash
+cd pybase
+python -m gui.main
 ```
 
 ---
@@ -166,10 +197,10 @@ ROLLBACK;
 
 Each table produces two files in the `data/` directory:
 
-| File                | Contents                                    |
-| ------------------- | ------------------------------------------- |
-| `table_name.db`     | Fixed-width binary row data                 |
-| `table_name.schema` | JSON - columns, types, constraints, indexes |
+| File                | Contents                                   |
+| ------------------- | ------------------------------------------ |
+| `table_name.db`     | Fixed-width binary row data                |
+| `table_name.schema` | JSON -columns, types, constraints, indexes |
 
 On startup, the database scans `data/` for `.schema` files and reloads all tables automatically, including rebuilding B-Tree indexes into memory.
 
@@ -181,7 +212,18 @@ PyBase uses an **in-memory write buffer** model:
 
 - `BEGIN` starts buffering `INSERT`, `UPDATE`, and `DELETE` operations
 - `COMMIT` applies all buffered operations to the live tables and disk
-- `ROLLBACK` discards the buffer - nothing is written
+- `ROLLBACK` discards the buffer -nothing is written
 - `SELECT` always reads live data, even inside a transaction
 - `DROP TABLE` is blocked inside a transaction
 - Nested transactions are not supported
+
+---
+
+## Testing
+
+```bash
+cd pybase
+pytest tests/ -v
+```
+
+67 tests covering CRUD, constraints, B-Tree indexes, transactions, and persistence.

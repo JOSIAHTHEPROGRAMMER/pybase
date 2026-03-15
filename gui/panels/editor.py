@@ -2,13 +2,22 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QPlainTextEdit, QLabel
 )
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QKeySequence
+from PyQt6.QtCore import Qt, QSize
 
 from cli import (
     parse_create_table, parse_insert, parse_select,
     parse_delete, parse_update, parse_create_index,
     parse_drop_table
 )
+
+BACKGROUND   = "#0f0f0f"
+PANEL        = "#1a1a1a"
+BORDER       = "#2e2e2e"
+ACCENT       = "#00e599"
+TEXT_PRIMARY = "#ededed"
+TEXT_MUTED   = "#a0a0a0"
+EDITOR_BG    = "#141414"
 
 
 class EditorPanel(QWidget):
@@ -18,62 +27,87 @@ class EditorPanel(QWidget):
         self.on_result = on_result
         self.on_schema_change = on_schema_change
         self.on_transaction_change = on_transaction_change
-
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
 
-        # Label
+        # Header row
+        header = QHBoxLayout()
         label = QLabel("SQL Editor")
-        label.setStyleSheet("font-weight: bold; font-size: 13px;")
-        layout.addWidget(label)
+        label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-weight: 600; font-size: 13px;")
+        hint = QLabel("Ctrl+Enter to run")
+        hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        header.addWidget(label)
+        header.addStretch()
+        header.addWidget(hint)
+        layout.addLayout(header)
 
         # SQL text editor
         self.editor = QPlainTextEdit()
-        self.editor.setFont(QFont("Courier New", 11))
+        self.editor.setFont(QFont("JetBrains Mono, Cascadia Code, Courier New", 12))
         self.editor.setPlaceholderText(
-            "Enter SQL here...\n\n"
-            "Examples:\n"
-            "  CREATE TABLE users (id int PRIMARY KEY, name string);\n"
-            "  INSERT INTO users VALUES (1, 'Alice');\n"
-            "  SELECT * FROM users WHERE id > 0 ORDER BY id ASC LIMIT 10;\n"
-            "  BEGIN;\n"
-            "  COMMIT;"
+            "-- Enter SQL here\n\n"
+            "-- Examples:\n"
+            "-- CREATE TABLE users (id int PRIMARY KEY, name string);\n"
+            "-- INSERT INTO users VALUES (1, 'Alice');\n"
+            "-- SELECT * FROM users WHERE id > 0 ORDER BY id ASC;\n"
+            "-- BEGIN;\n"
+            "-- COMMIT;"
         )
+        self.editor.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background-color: {EDITOR_BG};
+                color: {TEXT_PRIMARY};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 10px;
+                selection-background-color: #00e59933;
+                selection-color: {TEXT_PRIMARY};
+            }}
+        """)
+        # Ctrl+Enter shortcut to run query
+        self.editor.keyPressEvent = self._editor_key_press
         layout.addWidget(self.editor)
 
         # Button row
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
 
-        self.run_btn = QPushButton("▶  Run")
-        self.run_btn.setFixedHeight(34)
-        self.run_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2563eb;
-                color: white;
-                border-radius: 5px;
+        self.run_btn = QPushButton("▶  Run Query")
+        self.run_btn.setFixedHeight(36)
+        self.run_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {ACCENT};
+                color: #0a0a0a;
+                border: none;
+                border-radius: 6px;
                 font-size: 13px;
-                padding: 0 18px;
-            }
-            QPushButton:hover { background-color: #1d4ed8; }
-            QPushButton:pressed { background-color: #1e40af; }
+                font-weight: 600;
+                padding: 0 20px;
+            }}
+            QPushButton:hover {{ background-color: #00d486; }}
+            QPushButton:pressed {{ background-color: #00b870; }}
         """)
         self.run_btn.clicked.connect(self._run_query)
 
         self.clear_btn = QPushButton("Clear")
-        self.clear_btn.setFixedHeight(34)
-        self.clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #e5e7eb;
-                color: #111827;
-                border-radius: 5px;
+        self.clear_btn.setFixedHeight(36)
+        self.clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {TEXT_MUTED};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
                 font-size: 13px;
-                padding: 0 18px;
-            }
-            QPushButton:hover { background-color: #d1d5db; }
+                padding: 0 16px;
+            }}
+            QPushButton:hover {{
+                border-color: #555;
+                color: {TEXT_PRIMARY};
+            }}
         """)
         self.clear_btn.clicked.connect(self.editor.clear)
 
@@ -82,11 +116,24 @@ class EditorPanel(QWidget):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
+    def _editor_key_press(self, event):
+        """
+        Ctrl+Enter triggers query execution from the editor.
+        All other keypresses are handled normally.
+        """
+        if (
+            event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            self._run_query()
+        else:
+            QPlainTextEdit.keyPressEvent(self.editor, event)
+
     def _run_query(self):
         """
         Parse and execute the SQL in the editor.
         Dispatches to the correct handler based on the command keyword.
-        Reuses the same parse functions as the CLI — single source of truth.
+        Reuses the same parse functions as the CLI - single source of truth.
         """
         command = self.editor.toPlainText().strip()
         if not command:
@@ -145,6 +192,7 @@ class EditorPanel(QWidget):
                     self.on_result([], [], f"Row inserted into '{table_name}'.")
 
             elif cmd_upper.startswith("SELECT"):
+                # SELECT always executes immediately - reads live data
                 table_name, selected_columns, conditions, order_by, limit = parse_select(command)
                 table = self.db.get_table(table_name)
                 rows = table.select_advanced(selected_columns, conditions, order_by, limit)
@@ -171,7 +219,8 @@ class EditorPanel(QWidget):
                 if self.db.in_transaction():
                     self.db.current_transaction.add(
                         "update", table_name,
-                        assignments=assignments, conditions=conditions
+                        assignments=assignments,
+                        conditions=conditions
                     )
                     self.on_result([], [], f"Queued: UPDATE '{table_name}'.")
                 else:

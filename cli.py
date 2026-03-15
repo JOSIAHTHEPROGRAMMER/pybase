@@ -24,7 +24,8 @@ def parse_conditions(where_clause: str) -> list:
         for op in operators:
             if op in condition:
                 column, value = condition.split(op, 1)
-                column = column.strip()
+                # Normalize column names to lowercase to match schema storage
+                column = column.strip().lower()
                 value = value.strip()
 
                 if value.startswith("'") and value.endswith("'"):
@@ -56,8 +57,9 @@ def parse_create_table(command: str):
 
     for col_def in cols_part.split(","):
         parts = col_def.strip().split()
-        col_name = parts[0]
-        col_type = parts[1].lower()  # normalize type to lowercase for schema consistency
+        # Normalize column names and types to lowercase for schema consistency
+        col_name = parts[0].lower()
+        col_type = parts[1].lower()
         columns.append((col_name, col_type))
 
         modifiers = [p.upper() for p in parts[2:]]
@@ -86,6 +88,7 @@ def parse_drop_table(command: str):
     table_name = command[table_idx + 5:].strip()
 
     return table_name
+
 
 # Example: INSERT INTO users VALUES (1, 'Josh');
 def parse_insert(command: str):
@@ -134,13 +137,14 @@ def parse_select(command: str):
     select_part = command[:from_idx]
     rest = command[from_idx + 4:]
 
-    # Column names are uppercased only for * check, preserved otherwise
-    selected_columns = (
-        select_part.upper().replace("SELECT", "")
-        .strip()
-        .split(",")
-    )
-    selected_columns = [col.strip() for col in selected_columns]
+    # Extract raw column list from SELECT ... FROM portion
+    raw_cols = select_part[select_part.upper().index("SELECT") + 6:].strip()
+
+    # Wildcard stays as-is, all other column names normalized to lowercase
+    if raw_cols.strip() == "*":
+        selected_columns = ["*"]
+    else:
+        selected_columns = [col.strip().lower() for col in raw_cols.split(",")]
 
     # Extract LIMIT first - it's always the last clause
     limit = None
@@ -159,7 +163,8 @@ def parse_select(command: str):
 
         # Parse "id ASC", "id DESC", or just "id" (defaults to ASC)
         order_parts = order_clause.split()
-        order_col = order_parts[0]
+        # Normalize ORDER BY column to lowercase to match schema
+        order_col = order_parts[0].lower()
         order_dir = order_parts[1].upper() if len(order_parts) > 1 else "ASC"
         order_by = (order_col, order_dir)
 
@@ -226,7 +231,8 @@ def parse_update(command: str):
     assignments = []
     for assignment in set_part.split(","):
         col, _, value = assignment.partition("=")
-        col = col.strip()
+        # Normalize assignment column names to lowercase
+        col = col.strip().lower()
         value = value.strip()
 
         if value.startswith("'") and value.endswith("'"):
@@ -256,7 +262,8 @@ def parse_create_index(command: str):
 
     paren_idx = rest.index("(")
     table_name = rest[:paren_idx].strip()
-    column_name = rest[paren_idx:].strip("() ").strip()
+    # Normalize column name to lowercase
+    column_name = rest[paren_idx:].strip("() ").strip().lower()
 
     return table_name, column_name
 
@@ -290,7 +297,7 @@ def main():
             elif cmd_upper.startswith("CREATE INDEX"):
                 table_name, column_name = parse_create_index(command)
                 table = db.get_table(table_name)
-                table.create_index(column_name)
+                print(table.create_index(column_name))
 
             elif cmd_upper.startswith("CREATE TABLE"):
                 table_name, columns, unique_columns, primary_key = parse_create_table(command)
@@ -370,6 +377,7 @@ def main():
 
         except Exception as e:
             print(f"Error: {e}")
+
 
 if __name__ == "__main__":
     main()

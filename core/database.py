@@ -27,16 +27,16 @@ class Database:
 
                 columns = [tuple(col) for col in schema["columns"]]
 
-                # unique_columns=None signals reopen — load from schema
-                table = Table(table_name, columns, unique_columns=None)
+                # Pass folder so Table writes files to the correct location
+                table = Table(table_name, columns, unique_columns=None, folder=self.folder)
                 self.tables[table_name] = table
 
     def create_table(self, name: str, columns: list[tuple[str, str]]):
         if name in self.tables:
             raise ValueError(f"Table '{name}' already exists.")
 
-        # unique_columns=set() signals fresh creation
-        table = Table(name, columns, unique_columns=set())
+        # Pass folder so Table writes files to the correct location
+        table = Table(name, columns, unique_columns=set(), folder=self.folder)
         self.tables[name] = table
         return table
 
@@ -47,7 +47,7 @@ class Database:
 
     def drop_table(self, name: str):
         """
-        Remove a table entirely — from memory and from disk.
+        Remove a table entirely - from memory and from disk.
         Deletes both the .db row file and .schema metadata file.
         Raises if the table doesn't exist.
         """
@@ -70,7 +70,7 @@ class Database:
     def begin_transaction(self):
         """
         Start a new transaction.
-        Raises if one is already active — nested transactions not supported yet.
+        Raises if one is already active - nested transactions not supported yet.
         """
         if self.current_transaction is not None and self.current_transaction.active:
             raise ValueError(
@@ -81,7 +81,7 @@ class Database:
 
     def commit_transaction(self) -> list:
         """
-        Commit the active transaction — apply all buffered operations.
+        Commit the active transaction - apply all buffered operations.
         Returns result strings for the CLI to display.
         """
         if self.current_transaction is None or not self.current_transaction.active:
@@ -93,7 +93,7 @@ class Database:
 
     def rollback_transaction(self):
         """
-        Rollback the active transaction — discard all buffered operations.
+        Rollback the active transaction - discard all buffered operations.
         Nothing was written to disk so nothing needs to be undone.
         """
         if self.current_transaction is None or not self.current_transaction.active:

@@ -6,22 +6,25 @@ from storage.index_manager import IndexManager
 class Table:
     SUPPORTED_TYPES = {"int": int, "string": str}
 
-    def __init__(self, name: str, columns: list[tuple[str, str]], unique_columns: set = None):
+    def __init__(self, name: str, columns: list[tuple[str, str]],
+                 unique_columns: set = None, folder: str = "data"):
         self.name = name
         self.columns = columns
-        self.schema_manager = SchemaManager(name)
-        self.pager = Pager(name, columns)
+        self.folder = folder
+        # Pass folder so files land in the correct directory
+        self.schema_manager = SchemaManager(name, folder)
+        self.pager = Pager(name, columns, folder)
         self._validate_schema()
         self.rows = self.pager.load_all_rows()
         self.index_manager = IndexManager()
 
         if unique_columns is not None:
-            # Fresh table creation — initialize constraints and persist schema
+            # Fresh table creation - initialize constraints and persist schema
             self.unique_columns = unique_columns
             self.primary_key = None
             self.schema_manager.write(self.columns, self.unique_columns, self.primary_key)
         else:
-            # Reopening existing table — restore constraints and rebuild indexes from disk
+            # Reopening existing table - restore constraints and rebuild indexes from disk
             schema = self.schema_manager.read()
             self.unique_columns = set(schema.get("unique_columns", []))
             self.primary_key = schema.get("primary_key", None)
@@ -59,7 +62,7 @@ class Table:
         if column_name not in [col[0] for col in self.columns]:
             raise ValueError(f"Column '{column_name}' does not exist.")
 
-        # PRIMARY KEY implies UNIQUE — add to constraint set
+        # PRIMARY KEY implies UNIQUE - add to constraint set
         self.unique_columns.add(column_name)
         self.primary_key = column_name
 
@@ -89,7 +92,7 @@ class Table:
     def _matches_conditions(self, row: list, conditions: list, column_index: dict) -> bool:
         """
         Return True if a row satisfies ALL conditions (AND logic).
-        Central predicate evaluator — single place to extend operators.
+        Central predicate evaluator - single place to extend operators.
 
         Supported operators: =, !=, >, >=, <, <=
         """
@@ -116,6 +119,7 @@ class Table:
         Build a B-Tree index on a column.
         Populates index from existing rows, then persists to schema.
         Future inserts/deletes/updates maintain the index automatically.
+        Returns a message string - caller decides whether to print it.
         """
         if column_name not in [col[0] for col in self.columns]:
             raise ValueError(f"Column '{column_name}' does not exist.")
@@ -141,7 +145,7 @@ class Table:
             indexes
         )
 
-        print(f"Index created on '{column_name}'.")
+        return f"Index created on '{column_name}'."
 
     def insert(self, row: list):
         """
@@ -208,7 +212,7 @@ class Table:
     def select_where(self, column_name: str, value):
         """
         Simple equality filter on a single column.
-        Kept for backwards compatibility — select_advanced is preferred.
+        Kept for backwards compatibility - select_advanced is preferred.
         """
         if column_name not in [col[0] for col in self.columns]:
             raise ValueError(f"Column '{column_name}' does not exist.")
@@ -232,7 +236,7 @@ class Table:
 
         Uses B-Tree index for single equality conditions on indexed columns.
         Falls back to full table scan for range queries or non-indexed columns.
-        LIMIT is applied last — after filtering, ordering, and projection.
+        LIMIT is applied last - after filtering, ordering, and projection.
         """
         if selected_columns != ["*"]:
             for col in selected_columns:
@@ -273,7 +277,7 @@ class Table:
                 if self._matches_conditions(row, conditions, column_index)
             ]
 
-        # Apply ORDER BY — sort filtered rows before limiting
+        # Apply ORDER BY - sort filtered rows before limiting
         if order_by is not None:
             order_col, order_dir = order_by
             col_idx = column_index[order_col]
@@ -284,7 +288,7 @@ class Table:
                 reverse=reverse
             )
 
-        # Apply LIMIT — slice after filtering and ordering
+        # Apply LIMIT - slice after filtering and ordering
         if limit is not None:
             filtered_rows = filtered_rows[:limit]
 
@@ -300,7 +304,7 @@ class Table:
     def delete(self, conditions: list):
         """
         Delete all rows matching ALL conditions.
-        Requires at least one WHERE condition — full table deletes not yet supported.
+        Requires at least one WHERE condition - full table deletes not yet supported.
         Rewrites the .db file after deletion via pager.
         Rebuilds all active B-Tree indexes after rewrite.
 
@@ -342,10 +346,10 @@ class Table:
     def update(self, assignments: list, conditions: list):
         """
         Update specific columns in rows matching ALL conditions.
-        Requires at least one WHERE condition — full table updates not yet supported.
+        Requires at least one WHERE condition - full table updates not yet supported.
 
-        assignments: list of (column, value) — columns to change
-        conditions:  list of (column, operator, value) — rows to target
+        assignments: list of (column, value) - columns to change
+        conditions:  list of (column, operator, value) - rows to target
 
         Enforces types, UNIQUE constraints, and NOT NULL on primary key.
         Rewrites the .db file after updates via pager.
@@ -393,7 +397,7 @@ class Table:
                 new_row = list(row)
 
                 for col, value in assignments:
-                    # Enforce UNIQUE — check no other existing row has this value
+                    # Enforce UNIQUE - check no other existing row has this value
                     if col in self.unique_columns:
                         idx = column_index[col]
                         for existing_row in self.rows:

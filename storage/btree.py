@@ -16,7 +16,7 @@ class BTreeNode:
 
 class BTree:
     # Maximum number of keys per node.
-    # When a node exceeds this, it splits — core B-Tree behavior.
+    # When a node exceeds this, it splits - core B-Tree behavior.
     ORDER = 3
 
     def __init__(self):
@@ -31,7 +31,7 @@ class BTree:
         root = self.root
 
         if len(root.keys) == (2 * self.ORDER) - 1:
-            # Root is full — create new root and split old one
+            # Root is full - create new root and split old one
             new_root = BTreeNode(leaf=False)
             new_root.children.append(self.root)
             self._split_child(new_root, 0)
@@ -49,7 +49,7 @@ class BTree:
         if node.leaf:
             # Find correct sorted position and insert
             if key in node.keys:
-                # Key exists — append row to existing key's list (non-unique index)
+                # Key exists - append row to existing key's list (non-unique index)
                 idx = node.keys.index(key)
                 node.values[idx].append(row)
             else:
@@ -65,7 +65,7 @@ class BTree:
                 node.keys[i + 1] = key
                 node.values[i + 1] = [row]
         else:
-            # Internal node — find correct child to descend into
+            # Internal node - find correct child to descend into
             while i >= 0 and key < node.keys[i]:
                 i -= 1
             i += 1
@@ -112,7 +112,7 @@ class BTree:
     def search(self, key) -> list:
         """
         Return all rows matching key, or empty list if not found.
-        O(log n) lookup — the core payoff of the index.
+        O(log n) lookup - the core payoff of the index.
         """
         return self._search(self.root, key)
 
@@ -142,7 +142,7 @@ class BTree:
             i += 1
 
         if i < len(node.keys) and key == node.keys[i]:
-            # Found the key — remove the specific row
+            # Found the key - remove the specific row
             if row in node.values[i]:
                 node.values[i].remove(row)
 
@@ -157,7 +157,7 @@ class BTree:
 
     def all_rows(self) -> list:
         """
-        In-order traversal — returns all indexed rows sorted by key.
+        In-order traversal - returns all indexed rows sorted by key.
         Used later for ORDER BY support.
         """
         result = []

@@ -30,7 +30,7 @@ pybase/
 │   ├── __init__.py
 │   ├── database.py         # Database registry, table lifecycle, transaction management
 │   ├── table.py            # Table operations, constraint enforcement, query execution
-│   └── transaction.py      # Transaction buffer — BEGIN / COMMIT / ROLLBACK
+│   └── transaction.py      # Transaction buffer - BEGIN / COMMIT / ROLLBACK
 ├── query/
 │   └── __init__.py         # Reserved for future query planner / optimizer
 ├── storage/

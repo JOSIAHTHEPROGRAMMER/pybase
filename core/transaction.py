@@ -1,6 +1,6 @@
 class Transaction:
     """
-    Represents an active transaction — a buffered list of operations
+    Represents an active transaction - a buffered list of operations
     that are either all committed or all rolled back.
 
     Each operation is stored as a dict:
@@ -10,12 +10,12 @@ class Transaction:
         "args": operation-specific arguments
     }
 
-    The transaction never touches disk directly — it delegates to
+    The transaction never touches disk directly - it delegates to
     Table methods at commit time.
     """
 
     def __init__(self):
-        # Buffer of pending operations — applied only on commit
+        # Buffer of pending operations - applied only on commit
         self.operations = []
         self.active = True
 
@@ -35,7 +35,7 @@ class Transaction:
         Apply all buffered operations against the live database.
         Returns a list of result strings for the CLI to display.
 
-        If any operation fails, raises immediately — partial state
+        If any operation fails, raises immediately - partial state
         is possible in this implementation (full rollback on error
         requires savepoints, which come later).
         """

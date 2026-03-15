@@ -15,7 +15,7 @@ def parse_conditions(where_clause: str) -> list:
     """
     conditions = []
 
-    # Order matters — check two-char operators first
+    # Order matters - check two-char operators first
     operators = ["!=", ">=", "<=", ">", "<", "="]
 
     for condition in where_clause.split("AND"):
@@ -65,7 +65,7 @@ def parse_create_table(command: str):
         if "UNIQUE" in modifiers:
             unique_columns.append(col_name)
 
-        # PRIMARY KEY detected — also implies UNIQUE
+        # PRIMARY KEY detected - also implies UNIQUE
         if "PRIMARY" in modifiers and "KEY" in modifiers:
             if primary_key is not None:
                 raise ValueError("Only one PRIMARY KEY allowed per table.")
@@ -124,7 +124,7 @@ def parse_select(command: str):
     order_by tuple, and limit value.
 
     Clause extraction order matters:
-    LIMIT is stripped first, then ORDER BY, then WHERE — all from the tail
+    LIMIT is stripped first, then ORDER BY, then WHERE - all from the tail
     of the statement to avoid consuming parts of other clauses.
     """
     command = command.strip().rstrip(";")
@@ -142,7 +142,7 @@ def parse_select(command: str):
     )
     selected_columns = [col.strip() for col in selected_columns]
 
-    # Extract LIMIT first — it's always the last clause
+    # Extract LIMIT first - it's always the last clause
     limit = None
     if "LIMIT" in rest.upper():
         limit_idx = rest.upper().index("LIMIT")
@@ -150,7 +150,7 @@ def parse_select(command: str):
         rest = rest[:limit_idx].strip()
         limit = int(limit_val)
 
-    # Extract ORDER BY — comes before LIMIT, after WHERE
+    # Extract ORDER BY - comes before LIMIT, after WHERE
     order_by = None
     if "ORDER BY" in rest.upper():
         order_idx = rest.upper().index("ORDER BY")
@@ -180,7 +180,7 @@ def parse_select(command: str):
 def parse_delete(command: str):
     """
     Parse a DELETE FROM command and return table name and conditions.
-    DELETE requires a WHERE clause — no blind full-table deletes.
+    DELETE requires a WHERE clause - no blind full-table deletes.
     """
     command = command.strip().rstrip(";")
 
@@ -268,7 +268,7 @@ def main():
         if command.lower() == "exit":
             # Warn user if they exit with an open transaction
             if db.in_transaction():
-                print("Warning: exiting with an active transaction — changes are lost.")
+                print("Warning: exiting with an active transaction - changes are lost.")
             break
         try:
             cmd_upper = command.upper()
@@ -307,7 +307,7 @@ def main():
             elif cmd_upper.startswith("DROP TABLE"):
                 table_name = parse_drop_table(command)
 
-                # Block drop inside an active transaction — too destructive to buffer
+                # Block drop inside an active transaction - too destructive to buffer
                 if db.in_transaction():
                     raise ValueError(
                         "Cannot DROP TABLE inside a transaction. "
@@ -321,7 +321,7 @@ def main():
                 table_name, row = parse_insert(command)
 
                 if db.in_transaction():
-                    # Buffer operation — do not execute yet
+                    # Buffer operation - do not execute yet
                     db.current_transaction.add("insert", table_name, row=row)
                     print(f"Queued: INSERT into '{table_name}'.")
                 else:
@@ -330,7 +330,7 @@ def main():
                     print(f"Row inserted into '{table_name}' successfully!")
 
             elif cmd_upper.startswith("SELECT"):
-                # SELECT always executes immediately — reads live data
+                # SELECT always executes immediately - reads live data
                 table_name, selected_columns, conditions, order_by, limit = parse_select(command)
                 table = db.get_table(table_name)
                 rows = table.select_advanced(selected_columns, conditions, order_by, limit)
@@ -341,7 +341,7 @@ def main():
                 table_name, conditions = parse_delete(command)
 
                 if db.in_transaction():
-                    # Buffer operation — do not execute yet
+                    # Buffer operation - do not execute yet
                     db.current_transaction.add("delete", table_name, conditions=conditions)
                     print(f"Queued: DELETE from '{table_name}'.")
                 else:
@@ -353,7 +353,7 @@ def main():
                 table_name, assignments, conditions = parse_update(command)
 
                 if db.in_transaction():
-                    # Buffer operation — do not execute yet
+                    # Buffer operation - do not execute yet
                     db.current_transaction.add(
                         "update", table_name,
                         assignments=assignments,

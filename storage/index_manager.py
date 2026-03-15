@@ -4,7 +4,7 @@ from .btree import BTree
 class IndexManager:
     """
     Owns all B-Tree indexes for a single table.
-    Sits between Table and BTree — Table never touches BTree directly.
+    Sits between Table and BTree - Table never touches BTree directly.
 
     indexes: { column_name: BTree }
     """
@@ -44,7 +44,7 @@ class IndexManager:
     def search(self, column_name: str, key) -> list:
         """
         Return all rows matching key in the index.
-        Returns None if no index exists on this column — signals table scan needed.
+        Returns None if no index exists on this column - signals table scan needed.
         """
         if column_name not in self.indexes:
             return None  # None = no index, [] = index exists but no match

@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QTableWidget,
-    QTableWidgetItem, QLabel, QHeaderView
+    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
+    QLabel, QHeaderView, QTabWidget
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
@@ -16,8 +16,10 @@ ROW_SELECTED = "#00e59920"
 
 
 class ResultsPanel(QWidget):
-    def __init__(self):
+    def __init__(self, db):
         super().__init__()
+        # db reference needed by ER diagram tab
+        self.db = db
         self._build_ui()
 
     def _build_ui(self):
@@ -25,27 +27,82 @@ class ResultsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
-        # Header
-        header = QHBoxLayout() if False else QVBoxLayout()
-        self.label = QLabel("Results")
-        self.label.setStyleSheet(
-            f"color: {TEXT_PRIMARY}; font-weight: 600; font-size: 13px;"
-        )
+        # Status message above tabs
         self.message = QLabel("")
         self.message.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
-        layout.addWidget(self.label)
         layout.addWidget(self.message)
 
-        # Results table
+        # Tab widget
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                background-color: {PANEL};
+            }}
+            QTabBar::tab {{
+                background-color: {BACKGROUND};
+                color: {TEXT_MUTED};
+                border: 1px solid {BORDER};
+                border-bottom: none;
+                border-radius: 4px 4px 0 0;
+                padding: 6px 18px;
+                font-size: 12px;
+                margin-right: 2px;
+            }}
+            QTabBar::tab:selected {{
+                background-color: {PANEL};
+                color: {ACCENT};
+                border-bottom: 2px solid {ACCENT};
+            }}
+            QTabBar::tab:hover {{
+                color: {TEXT_PRIMARY};
+            }}
+        """)
+
+        # Tab 1 - Results table
+        self.table_tab = self._build_table_tab()
+        self.tabs.addTab(self.table_tab, "Table")
+
+        # Tab 2 - Bar chart (imported lazily to avoid circular imports)
+        from gui.panels.chart import ChartPanel
+        self.chart_panel = ChartPanel()
+        self.tabs.addTab(self.chart_panel, "Chart")
+
+        # Tab 3 - ER Diagram
+        from gui.panels.er_diagram import ERDiagramPanel
+        self.er_panel = ERDiagramPanel(self.db)
+        self.tabs.addTab(self.er_panel, "ER Diagram")
+
+        layout.addWidget(self.tabs)
+
+    def _build_table_tab(self) -> QWidget:
+        """Build the results table widget for Tab 1."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
         self.table = QTableWidget()
         self.table.setFont(QFont("JetBrains Mono, Cascadia Code, Courier New", 11))
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(True)
-        self.table.verticalHeader().setVisible(False)
 
-        # Each column stretches equally across full width
+        self.table.verticalHeader().setVisible(True)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.verticalHeader().setStyleSheet(f"""
+            QHeaderView::section {{
+                background-color: #111111;
+                color: {TEXT_MUTED};
+                border: none;
+                border-right: 1px solid {BORDER};
+                border-bottom: 1px solid {BORDER};
+                padding: 0 6px;
+                font-size: 10px;
+            }}
+        """)
+
         self.table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
@@ -56,8 +113,7 @@ class ResultsPanel(QWidget):
                 alternate-background-color: {ROW_ALT};
                 color: {TEXT_PRIMARY};
                 gridline-color: {BORDER};
-                border: 1px solid {BORDER};
-                border-radius: 6px;
+                border: none;
                 outline: none;
             }}
             QHeaderView::section {{
@@ -69,8 +125,6 @@ class ResultsPanel(QWidget):
                 border-bottom: 1px solid {BORDER};
                 font-size: 11px;
                 font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
             }}
             QTableWidget::item {{
                 padding: 6px 12px;
@@ -87,16 +141,15 @@ class ResultsPanel(QWidget):
             }}
         """)
         layout.addWidget(self.table)
+        return widget
 
     def display(self, columns: list, rows: list, message: str):
         """
-        Populate the results table with column headers and row data.
-        Columns stretch evenly across the full panel width.
-        For non-SELECT operations, clears the table and shows the status message.
+        Populate the table tab and pass data to chart tab.
+        ER diagram is always live and doesn't need data passed to it.
         """
         self.message.setText(message)
 
-        # Color message based on outcome
         if message.startswith("Error"):
             self.message.setStyleSheet("font-size: 11px; color: #f87171;")
         elif message.startswith("Transaction"):
@@ -110,16 +163,20 @@ class ResultsPanel(QWidget):
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
 
+        # Pass data to chart - it decides whether to render based on content
+        self.chart_panel.update_chart(columns, rows)
+
         if not columns or not rows:
             return
 
-        # Set headers
         self.table.setColumnCount(len(columns))
         self.table.setHorizontalHeaderLabels(columns)
-
-        # Populate rows
         self.table.setRowCount(len(rows))
+
         for row_idx, row in enumerate(rows):
+            self.table.setVerticalHeaderItem(
+                row_idx, QTableWidgetItem(str(row_idx + 1))
+            )
             for col_idx, value in enumerate(row):
                 item = QTableWidgetItem(str(value))
                 item.setForeground(QColor(TEXT_PRIMARY))
@@ -127,3 +184,9 @@ class ResultsPanel(QWidget):
                     Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
                 )
                 self.table.setItem(row_idx, col_idx, item)
+
+    def refresh_er(self):
+        """
+        Called after DDL operations so the ER diagram redraws.
+        """
+        self.er_panel.refresh()

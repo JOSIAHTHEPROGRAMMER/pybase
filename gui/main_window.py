@@ -1,8 +1,7 @@
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter
+    QMainWindow, QWidget, QVBoxLayout, QSplitter
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPalette, QColor
 
 from core.database import Database
 from gui.panels.editor import EditorPanel
@@ -10,13 +9,8 @@ from gui.panels.results import ResultsPanel
 from gui.panels.schema import SchemaPanel
 from gui.widgets.status_bar import TransactionStatusBar
 
-# Neon-inspired dark palette
-BACKGROUND     = "#0f0f0f"
-PANEL          = "#1a1a1a"
-BORDER         = "#2e2e2e"
-ACCENT         = "#00e599"
-TEXT_PRIMARY   = "#ededed"
-TEXT_MUTED     = "#a0a0a0"
+BACKGROUND = "#0f0f0f"
+BORDER     = "#2e2e2e"
 
 
 class MainWindow(QMainWindow):
@@ -38,7 +32,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(f"""
             QMainWindow, QWidget {{
                 background-color: {BACKGROUND};
-                color: {TEXT_PRIMARY};
+                color: #ededed;
                 font-family: 'Inter', 'Segoe UI', sans-serif;
                 font-size: 13px;
             }}
@@ -46,7 +40,7 @@ class MainWindow(QMainWindow):
                 background-color: {BORDER};
             }}
             QScrollBar:vertical {{
-                background: {PANEL};
+                background: #1a1a1a;
                 width: 8px;
                 border-radius: 4px;
             }}
@@ -55,11 +49,12 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
                 min-height: 20px;
             }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
                 height: 0px;
             }}
             QScrollBar:horizontal {{
-                background: {PANEL};
+                background: #1a1a1a;
                 height: 8px;
                 border-radius: 4px;
             }}
@@ -67,7 +62,8 @@ class MainWindow(QMainWindow):
                 background: #444;
                 border-radius: 4px;
             }}
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {{
                 width: 0px;
             }}
         """)
@@ -104,7 +100,8 @@ class MainWindow(QMainWindow):
         )
         right_splitter.addWidget(self.editor_panel)
 
-        self.results_panel = ResultsPanel()
+        # ResultsPanel now takes db for ER diagram tab
+        self.results_panel = ResultsPanel(self.db)
         right_splitter.addWidget(self.results_panel)
 
         right_splitter.setSizes([240, 460])
@@ -127,12 +124,19 @@ class MainWindow(QMainWindow):
         """
         self.results_panel.display(columns, rows, message)
 
+        self.schema_panel.refresh()
+
+             
+
+
     def _refresh_schema(self):
         """
-        Called after DDL operations (CREATE TABLE, DROP TABLE, CREATE INDEX)
-        so the schema browser reflects the current state.
+        Called after DDL operations so schema browser and ER diagram
+        both reflect the current state.
         """
         self.schema_panel.refresh()
+        # Refresh ER diagram whenever schema changes
+        self.results_panel.refresh_er()
 
     def _update_transaction_status(self):
         """

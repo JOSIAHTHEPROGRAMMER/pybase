@@ -10,7 +10,12 @@ class SchemaManager:
     Schema format:
     {
         "columns": [["id", "int"], ["name", "string"]],
-        "unique_columns": ["id"]
+        "unique_columns": ["id"],
+        "primary_key": "id",
+        "indexes": [],
+        "foreign_keys": [
+            {"column": "dept_id", "ref_table": "departments", "ref_column": "id"}
+        ]
     }
     """
 
@@ -22,15 +27,17 @@ class SchemaManager:
         if not os.path.exists(folder):
             os.makedirs(folder)
 
-    def write(self, columns: list[tuple[str, str]], unique_columns: set, primary_key: str = None, indexes=None):
+    def write(self, columns, unique_columns, primary_key=None,
+              indexes=None, foreign_keys=None):
         """
-        Persist schema to disk. Called once at table creation.
+        Persist schema to disk including foreign key definitions.
         """
         schema = {
-            "columns": [list(col) for col in columns],
+            "columns":      [list(col) for col in columns],
             "unique_columns": list(unique_columns),
-            "primary_key": primary_key,
-            "indexes": indexes or [],
+            "primary_key":  primary_key,
+            "indexes":      indexes or [],
+            "foreign_keys": foreign_keys or [],
         }
         with open(self.schema_path, "w") as f:
             json.dump(schema, f, indent=2)
@@ -50,6 +57,5 @@ class SchemaManager:
     def exists(self) -> bool:
         """
         Check if a schema file already exists on disk.
-        Used by Database to detect pre-existing tables.
         """
         return os.path.exists(self.schema_path)

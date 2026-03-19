@@ -1,49 +1,239 @@
 from core.database import Database
 
+
 db = Database()
 
 
 def parse_conditions(where_clause: str) -> list:
     """
-    Parse a WHERE clause string into a list of condition tuples.
-    Handles: =, !=, >=, <=, >, 
+    Parse a WHERE clause string into a list of condition dicts
+    compatible with query.expression.Expression.evaluate.
 
-    Multi-char operators must be checked before single-char ones
-    to avoid '>' matching the first char of '>='.
+    Handles:
+        Comparison:  =, !=, <>, >, <, >=, <=
+        Logical:     AND, OR (NOT handled at expression level)
+        Special:     IN, BETWEEN, LIKE, IS NULL, IS NOT NULL
+        Bitwise:     &, |, ^, <<, >>
 
-    Returns: list of (column, operator, value) tuples
+    OR splits the clause into two sides and returns a single OR condition dict.
+    AND is handled by returning a list of conditions all of which must match.
+
+    Returns a list of condition dicts.
     """
+    where_clause = where_clause.strip()
+
+    # Handle OR at the top level by splitting on OR keyword
+    # This produces a single OR condition wrapping left and right sides
+    or_parts = _split_logical(where_clause, "OR")
+    if len(or_parts) > 1:
+        left  = parse_conditions(or_parts[0])
+        right = parse_conditions(or_parts[1])
+        return [{"type": "or", "left": _wrap(left), "right": _wrap(right)}]
+
+    # Handle AND by splitting into individual conditions
+    and_parts = _split_logical(where_clause, "AND")
     conditions = []
 
-    # Order matters - check two-char operators first
-    operators = ["!=", ">=", "<=", ">", "<", "="]
-
-    for condition in where_clause.split("AND"):
-        condition = condition.strip()
-
-        for op in operators:
-            if op in condition:
-                column, value = condition.split(op, 1)
-                # Normalize column names to lowercase to match schema storage
-                column = column.strip().lower()
-                value = value.strip()
-
-                if value.startswith("'") and value.endswith("'"):
-                    value = value[1:-1]
-                else:
-                    value = int(value)
-
-                conditions.append((column, op, value))
-                break
+    for part in and_parts:
+        part = part.strip()
+        conditions.append(_parse_single_condition(part))
 
     return conditions
+
+
+def _wrap(conditions: list) -> dict:
+    """
+    Wrap a list of conditions into a single condition dict.
+    If only one condition, return it directly.
+    If multiple, chain them with AND.
+    """
+    if len(conditions) == 1:
+        return conditions[0]
+
+    result = conditions[0]
+    for cond in conditions[1:]:
+        result = {"type": "and", "left": result, "right": cond}
+    return result
+
+
+def _split_logical(clause: str, keyword: str) -> list:
+    """
+    Split a WHERE clause on a logical keyword (AND or OR) while
+    respecting parentheses, quoted strings, and BETWEEN expressions.
+    AND inside BETWEEN low AND high is not a logical separator.
+    """
+    parts   = []
+    depth   = 0
+    current = ""
+    i       = 0
+    kw_len  = len(keyword)
+
+    while i < len(clause):
+        char = clause[i]
+
+        if char == "(":
+            depth += 1
+            current += char
+            i += 1
+
+        elif char == ")":
+            depth -= 1
+            current += char
+            i += 1
+
+        elif char in ("'", '"'):
+            quote = char
+            current += char
+            i += 1
+            while i < len(clause) and clause[i] != quote:
+                current += clause[i]
+                i += 1
+            if i < len(clause):
+                current += clause[i]
+                i += 1
+
+        elif (
+            depth == 0
+            and clause[i:i + kw_len].upper() == keyword
+            and (i == 0 or clause[i - 1] == " ")
+            and (i + kw_len >= len(clause) or clause[i + kw_len] == " ")
+        ):
+            # Check if this AND is part of a BETWEEN expression
+            # by looking at what came before in current
+            if keyword == "AND" and "BETWEEN" in current.upper():
+                # This AND belongs to BETWEEN - do not split here
+                current += clause[i:i + kw_len]
+                i += kw_len
+            else:
+                parts.append(current.strip())
+                current = ""
+                i += kw_len
+
+        else:
+            current += char
+            i += 1
+
+    if current.strip():
+        parts.append(current.strip())
+
+    return parts if len(parts) > 1 else [clause]
+
+
+
+def _parse_single_condition(part: str) -> dict:
+    """
+    Parse a single condition expression into a condition dict.
+
+    Handles:
+        IS NULL / IS NOT NULL
+        BETWEEN low AND high
+        IN (val1, val2, ...)
+        LIKE pattern
+        Standard comparison and bitwise operators
+    """
+    upper = part.upper()
+
+    # IS NULL / IS NOT NULL
+    if " IS NOT NULL" in upper:
+        col = part[:upper.index(" IS NOT NULL")].strip().lower()
+        return {"type": "is_null", "column": col, "negated": True}
+
+    if " IS NULL" in upper:
+        col = part[:upper.index(" IS NULL")].strip().lower()
+        return {"type": "is_null", "column": col, "negated": False}
+
+    # BETWEEN low AND high
+    if " BETWEEN " in upper:
+        idx  = upper.index(" BETWEEN ")
+        col  = part[:idx].strip().lower()
+        rest = part[idx + 9:].strip()
+
+        # AND separator inside BETWEEN
+        rest_upper = rest.upper()
+        if " AND " not in rest_upper:
+            raise ValueError(f"BETWEEN requires AND: {part!r}")
+
+        and_idx = rest_upper.index(" AND ")
+        low     = _parse_value(rest[:and_idx].strip())
+        high    = _parse_value(rest[and_idx + 5:].strip())
+        return {"type": "between", "column": col, "low": low, "high": high}
+  
+    # IN (val1, val2, ...)
+    if " IN " in upper or upper.endswith(")") and " IN(" in upper.replace(" ", ""):
+        in_idx = upper.index(" IN ")
+        col    = part[:in_idx].strip().lower()
+        rest   = part[in_idx + 4:].strip().strip("()")
+        values = [_parse_value(v.strip()) for v in rest.split(",")]
+        return {"type": "in", "column": col, "values": values}
+
+    # LIKE pattern
+    if " LIKE " in upper:
+        like_idx = upper.index(" LIKE ")
+        col      = part[:like_idx].strip().lower()
+        pattern  = part[like_idx + 6:].strip().strip("'")
+        return {"type": "like", "column": col, "pattern": pattern}
+
+    # Standard operators - check multi-char first to avoid partial matches
+    operators = ["<>", "!=", ">=", "<=", "<<", ">>", ">", "<", "=", "&", "|", "^"]
+
+    for op in operators:
+        if op in part:
+            left, _, right = part.partition(op)
+            col   = left.strip().lower()
+            value = _parse_value(right.strip())
+
+            # Check for arithmetic on the column side
+            # e.g. salary + 5000 > 100000
+            arith_ops = ["+", "-", "*", "/", "%"]
+            arithmetic = None
+
+            for aop in arith_ops:
+                if aop in col:
+                    col_part, _, operand_part = col.partition(aop)
+                    col        = col_part.strip()
+                    arithmetic = {"op": aop, "operand": _parse_value(operand_part.strip())}
+                    break
+
+            cond = {"type": "simple", "column": col, "op": op, "value": value}
+            if arithmetic:
+                cond["arithmetic"] = arithmetic
+
+            return cond
+
+    raise ValueError(f"Cannot parse condition: {part!r}")
+
+
+def _parse_value(val: str):
+    """
+    Convert a string token to the appropriate Python type.
+    Quoted strings become str, numeric strings become int or float.
+    """
+    val = val.strip()
+
+    if val.startswith("'") and val.endswith("'"):
+        return val[1:-1]
+
+    if val.startswith('"') and val.endswith('"'):
+        return val[1:-1]
+
+    # Try int first, then float
+    try:
+        return int(val)
+    except ValueError:
+        pass
+
+    try:
+        return float(val)
+    except ValueError:
+        pass
+
+    return val
 
 
 # Simple command parsing functions for CREATE TABLE, INSERT INTO, and SELECT statements
 def parse_create_table(command: str):
     command = command.strip().rstrip(";")
 
-    # Use index-based split so keyword casing doesn't matter
     table_idx = command.upper().index("TABLE")
     original_rest = command[table_idx + 5:]
 
@@ -54,10 +244,10 @@ def parse_create_table(command: str):
     columns = []
     unique_columns = []
     primary_key = None
+    foreign_keys = []
 
     for col_def in cols_part.split(","):
         parts = col_def.strip().split()
-        # Normalize column names and types to lowercase for schema consistency
         col_name = parts[0].lower()
         col_type = parts[1].lower()
         columns.append((col_name, col_type))
@@ -67,15 +257,40 @@ def parse_create_table(command: str):
         if "UNIQUE" in modifiers:
             unique_columns.append(col_name)
 
-        # PRIMARY KEY detected - also implies UNIQUE
         if "PRIMARY" in modifiers and "KEY" in modifiers:
             if primary_key is not None:
                 raise ValueError("Only one PRIMARY KEY allowed per table.")
             primary_key = col_name
 
-    return table_name, columns, unique_columns, primary_key
+        # Detect REFERENCES keyword for FK definition
+        # Syntax: col_name type REFERENCES other_table(other_col)
+        if "REFERENCES" in modifiers:
+            # Find REFERENCES in the original parts list, not modifiers
+            # parts[0] = col_name, parts[1] = col_type, parts[2+] = modifiers
+            upper_parts = [p.upper() for p in parts]
+            ref_idx = upper_parts.index("REFERENCES")
+            ref_part = parts[ref_idx + 1]  # the token immediately after REFERENCES
 
+            if "(" in ref_part and ")" in ref_part:
+                # Format: departments(id)
+                ref_table = ref_part[:ref_part.index("(")].strip().lower()
+                ref_col   = ref_part[ref_part.index("(") + 1:ref_part.index(")")].strip().lower()
+            elif "(" in ref_part:
+                # Format: departments( - closing paren is in next token
+                ref_table = ref_part[:ref_part.index("(")].strip().lower()
+                next_part = parts[ref_idx + 2] if ref_idx + 2 < len(parts) else "id"
+                ref_col   = next_part.strip(")").strip().lower()
+            else:
+                ref_table = ref_part.strip().lower()
+                ref_col   = "id"
 
+            foreign_keys.append({
+                "column":     col_name,
+                "ref_table":  ref_table,
+                "ref_column": ref_col
+            })
+
+    return table_name, columns, unique_columns, primary_key, foreign_keys
 # Example: DROP TABLE users;
 def parse_drop_table(command: str):
     """
@@ -161,13 +376,12 @@ def parse_select(command: str):
         order_clause = rest[order_idx + 8:].strip()
         rest = rest[:order_idx].strip()
 
-        # Parse "id ASC", "id DESC", or just "id" (defaults to ASC)
         order_parts = order_clause.split()
-        # Normalize ORDER BY column to lowercase to match schema
-        order_col = order_parts[0].lower()
-        order_dir = order_parts[1].upper() if len(order_parts) > 1 else "ASC"
-        order_by = (order_col, order_dir)
-
+        if order_parts:
+            order_col = order_parts[0].lower()
+            order_dir = order_parts[1].upper() if len(order_parts) > 1 else "ASC"
+            order_by = (order_col, order_dir)
+   
     # Extract WHERE conditions if present
     conditions = []
     if "WHERE" in rest.upper():
@@ -300,7 +514,7 @@ def main():
                 print(table.create_index(column_name))
 
             elif cmd_upper.startswith("CREATE TABLE"):
-                table_name, columns, unique_columns, primary_key = parse_create_table(command)
+                table_name, columns, unique_columns, primary_key, foreign_keys = parse_create_table(command)
                 table = db.create_table(table_name, columns)
 
                 for col in unique_columns:
@@ -308,6 +522,9 @@ def main():
 
                 if primary_key:
                     table.set_primary_key(primary_key)
+
+                for fk in foreign_keys:
+                    table.add_foreign_key(fk["column"], fk["ref_table"], fk["ref_column"])
 
                 print(f"Table '{table_name}' created successfully!")
 
@@ -370,7 +587,7 @@ def main():
                 else:
                     table = db.get_table(table_name)
                     updated_count = table.update(assignments, conditions)
-                    print(f"{updated_count} row(s) updated in '{table_name}'.")
+                    (f"{updated_count} row(s) updated in '{table_name}'.")
 
             else:
                 print("Unsupported command.")

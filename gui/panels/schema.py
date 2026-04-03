@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTreeWidget,
     QTreeWidgetItem, QLabel
 )
-from PyQt6.QtCore import Qt
+
 from PyQt6.QtGui import QFont, QColor
 from gui.widgets.font import get_mono_font
 

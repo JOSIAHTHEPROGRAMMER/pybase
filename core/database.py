@@ -67,6 +67,31 @@ class Database:
         # Remove from in-memory registry
         del self.tables[name]
 
+    def drop_database(self):
+        """
+        Destroy all tables and wipe all persisted data from disk.
+        Equivalent to dropping every table at once plus clearing history.
+        The data folder is kept so the engine can restart cleanly.
+        Used for a full reset of the database state.
+        """
+        # Drop every table cleanly using existing drop_table logic
+        for table_name in list(self.tables.keys()):
+            table = self.tables[table_name]
+
+            if os.path.exists(table.pager.file_path):
+                os.remove(table.pager.file_path)
+
+            if os.path.exists(table.schema_manager.schema_path):
+                os.remove(table.schema_manager.schema_path)
+
+        # Clear in-memory registry
+        self.tables.clear()
+
+        # Wipe query history file if it exists
+        history_path = os.path.join(self.folder, "history.json")
+        if os.path.exists(history_path):
+            os.remove(history_path)
+
     def begin_transaction(self):
         """
         Start a new transaction.

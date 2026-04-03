@@ -22,10 +22,11 @@ class SQLHighlighter(QSyntaxHighlighter):
         "INDEX", "ON", "PRIMARY", "KEY", "UNIQUE", "ORDER", "BY",
         "ASC", "DESC", "LIMIT", "AND", "OR", "NOT", "NULL",
         "BEGIN", "COMMIT", "ROLLBACK", "IN", "IS", "LIKE",
-        "BETWEEN", "REFERENCES", "FOREIGN",
+        "BETWEEN", "REFERENCES", "FOREIGN", "TRUE", "FALSE",
+        "AUTO_INCREMENT", "DEFAULT", "CHECK", "DATABASE",
     ]
 
-    TYPES = ["INT", "STRING", "FLOAT", "BOOL"]
+    TYPES = ["INT", "BIGINT", "FLOAT", "BOOLEAN", "BOOL", "STRING"]
 
     def __init__(self, document):
         super().__init__(document)

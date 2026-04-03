@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QPlainTextEdit, QLabel, QMessageBox
 )
-from PyQt6.QtGui import QFont
+
 from PyQt6.QtCore import Qt
 from gui.widgets.font import get_mono_font
 
@@ -44,7 +44,7 @@ class EditorPanel(QWidget):
         label.setStyleSheet(
             f"color: {TEXT_PRIMARY}; font-weight: 600; font-size: 13px;"
         )
-        hint = QLabel("Ctrl+Enter to run")
+        hint = QLabel("Ctrl+Enter to run  |  Ctrl+/ to comment")
         hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
         header.addWidget(label)
         header.addStretch()
@@ -67,6 +67,9 @@ class EditorPanel(QWidget):
             "-- INSERT INTO users VALUES (1, 'Alice');\n"
             "-- SELECT * FROM users WHERE id > 0 ORDER BY id ASC;\n"
             "-- BEGIN;\n"
+            "-- SAVEPOINT sp1;\n"
+            "-- ROLLBACK TO SAVEPOINT sp1;\n"
+            "-- RELEASE SAVEPOINT sp1;\n"
             "-- COMMIT;"
         )
         self.editor.setStyleSheet(f"""
@@ -110,6 +113,10 @@ class EditorPanel(QWidget):
             QPushButton:hover {{ background-color: #00d486; }}
             QPushButton:pressed {{ background-color: #00b870; }}
         """)
+        self.run_btn.setToolTip(
+            "Run all statements (Ctrl+Enter)\n"
+            "Tip: select text to run only that selection"
+        )
         self.run_btn.clicked.connect(self._run_query)
 
         self.clear_btn = QPushButton("Clear")
@@ -139,7 +146,8 @@ class EditorPanel(QWidget):
 
     def _editor_key_press(self, event):
         """
-        Ctrl+Enter triggers query execution from the editor.
+        Ctrl+Enter triggers query execution.
+        Ctrl+/ toggles line comments on selected lines or current line.
         All other keypresses are handled normally.
         """
         if (
@@ -147,8 +155,75 @@ class EditorPanel(QWidget):
             and event.modifiers() == Qt.KeyboardModifier.ControlModifier
         ):
             self._run_query()
+
+        elif (
+            event.key() == Qt.Key.Key_Slash
+            and event.modifiers() == Qt.KeyboardModifier.ControlModifier
+        ):
+            self._toggle_comment()
+
         else:
             QPlainTextEdit.keyPressEvent(self.editor, event)
+
+    def _toggle_comment(self):
+        """
+        Toggle SQL comment prefix on selected lines or the current line.
+        If all selected lines start with -- they are uncommented.
+        Otherwise all selected lines are commented.
+        Works on single lines and multi-line selections.
+        """
+        cursor = self.editor.textCursor()
+        doc    = self.editor.document()
+
+        start_block = doc.findBlock(cursor.selectionStart()).blockNumber()
+        end_block   = doc.findBlock(cursor.selectionEnd()).blockNumber()
+
+        # Collect all lines in selection
+        lines = []
+        for block_num in range(start_block, end_block + 1):
+            block = doc.findBlockByNumber(block_num)
+            lines.append(block.text())
+
+        # Decide whether to comment or uncomment
+        # If every non-empty line already starts with -- then uncomment
+        all_commented = all(
+            line.lstrip().startswith("--")
+            for line in lines
+            if line.strip()
+        )
+
+        # Apply transformation
+        cursor.beginEditBlock()
+
+        for block_num in range(start_block, end_block + 1):
+            block       = self.editor.document().findBlockByNumber(block_num)
+            block_text  = block.text()
+            block_cursor = self.editor.textCursor()
+            block_cursor.setPosition(block.position())
+            block_cursor.movePosition(
+                block_cursor.MoveOperation.EndOfBlock,
+                block_cursor.MoveMode.KeepAnchor
+            )
+
+            if all_commented:
+                # Remove leading -- and one optional space
+                stripped = block_text.lstrip()
+                if stripped.startswith("-- "):
+                    new_text = block_text.replace("-- ", "", 1)
+                elif stripped.startswith("--"):
+                    new_text = block_text.replace("--", "", 1)
+                else:
+                    new_text = block_text
+            else:
+                # Add -- at the start of non-empty lines
+                if block_text.strip():
+                    new_text = "-- " + block_text
+                else:
+                    new_text = block_text
+
+            block_cursor.insertText(new_text)
+
+        cursor.endEditBlock()
 
     def _load_from_history(self, query: str):
         """Load a historical query back into the editor."""
@@ -156,12 +231,22 @@ class EditorPanel(QWidget):
 
     def _run_query(self):
         """
-        Parse and execute all SQL statements in the editor.
-        Statements are split by semicolons.
-        Comment lines are stripped before parsing.
+        Parse and execute SQL from the editor.
+        If text is selected, only the selected text is executed.
+        Otherwise the full editor content is executed.
+        Statements are split by semicolons and comment lines are stripped.
         Each statement runs independently and errors stop execution.
         """
-        raw = self.editor.toPlainText().strip()
+        cursor = self.editor.textCursor()
+
+        # If user has selected text, run only that selection
+        if cursor.hasSelection():
+            raw = cursor.selectedText().strip()
+            # Qt uses unicode paragraph separator for newlines in selections
+            raw = raw.replace("\u2029", "\n")
+        else:
+            raw = self.editor.toPlainText().strip()
+
         if not raw:
             return
 
@@ -205,6 +290,9 @@ class EditorPanel(QWidget):
         Execute a single SQL statement.
         Returns True if successful, False if an error occurred.
         All results and errors are passed to the on_result callback.
+
+        SAVEPOINT variants are checked before plain ROLLBACK so that
+        "ROLLBACK TO SAVEPOINT" is never swallowed by the ROLLBACK branch.
         """
         cmd_upper = command.upper().strip()
 
@@ -219,6 +307,26 @@ class EditorPanel(QWidget):
                 self.on_transaction_change()
                 self.on_result([], [], "Transaction committed.\n" + "\n".join(results))
 
+            # SAVEPOINT branches must appear before the plain ROLLBACK check
+            # because "ROLLBACK TO SAVEPOINT" starts with "ROLLBACK"
+            elif cmd_upper.startswith("ROLLBACK TO SAVEPOINT"):
+                # Extract savepoint name from: ROLLBACK TO SAVEPOINT <name>
+                name = command.strip().split()[-1]
+                self.db.current_transaction.rollback_to_savepoint(name)
+                self.on_result([], [], f"Rolled back to savepoint '{name}'.")
+
+            elif cmd_upper.startswith("RELEASE SAVEPOINT"):
+                # Extract savepoint name from: RELEASE SAVEPOINT <name>
+                name = command.strip().split()[-1]
+                self.db.current_transaction.release_savepoint(name)
+                self.on_result([], [], f"Savepoint '{name}' released.")
+
+            elif cmd_upper.startswith("SAVEPOINT"):
+                # Extract savepoint name from: SAVEPOINT <name>
+                name = command.strip().split()[-1]
+                self.db.current_transaction.savepoint(name)
+                self.on_result([], [], f"Savepoint '{name}' created.")
+
             elif cmd_upper == "ROLLBACK":
                 self.db.rollback_transaction()
                 self.on_transaction_change()
@@ -232,8 +340,10 @@ class EditorPanel(QWidget):
                 self.on_result([], [], msg)
 
             elif cmd_upper.startswith("CREATE TABLE"):
-                # Unpack 5 values now that parse_create_table returns foreign_keys
-                table_name, columns, unique_columns, primary_key, foreign_keys = parse_create_table(command)
+                (table_name, columns, unique_columns, primary_key,
+                foreign_keys, not_null_columns, default_values,
+                check_constraints, auto_increment_col) = parse_create_table(command)
+
                 table = self.db.create_table(table_name, columns)
 
                 for col in unique_columns:
@@ -242,16 +352,74 @@ class EditorPanel(QWidget):
                 if primary_key:
                     table.set_primary_key(primary_key)
 
-                # Register any FK constraints defined inline with REFERENCES
+                for col in not_null_columns:
+                    table.add_not_null_constraint(col)
+
+                for col, val in default_values.items():
+                    table.set_default_value(col, val)
+
+                for cc in check_constraints:
+                    table.add_check_constraint(cc["column"], cc["op"], cc["value"])
+
                 for fk in foreign_keys:
                     table.add_foreign_key(
                         fk["column"],
                         fk["ref_table"],
-                        fk["ref_column"]
+                        fk["ref_column"],
+                        on_delete=fk.get("on_delete"),
+                        on_update=fk.get("on_update")
                     )
+
+                if auto_increment_col:
+                    table.set_auto_increment(auto_increment_col)
 
                 self.on_schema_change()
                 self.on_result([], [], f"Table '{table_name}' created successfully.")
+
+            elif cmd_upper.startswith("DROP DATABASE"):
+                if self.db.in_transaction():
+                    raise ValueError(
+                        "Cannot DROP DATABASE inside a transaction. "
+                        "COMMIT or ROLLBACK first."
+                    )
+
+                # Stricter confirm dialog since this destroys everything
+                confirm = QMessageBox(self)
+                confirm.setWindowTitle("Confirm DROP DATABASE")
+                confirm.setText("Drop the entire database?")
+                confirm.setInformativeText(
+                    "This will permanently delete ALL tables, ALL data, and query history. "
+                    "This cannot be undone."
+                )
+                confirm.setStandardButtons(
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+                )
+                confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+                confirm.setStyleSheet("""
+                    QMessageBox {
+                        background-color: #1a1a1a;
+                        color: #ededed;
+                    }
+                    QLabel { color: #ededed; }
+                    QPushButton {
+                        background-color: #2e2e2e;
+                        color: #ededed;
+                        border: 1px solid #444;
+                        border-radius: 4px;
+                        padding: 6px 16px;
+                        min-width: 80px;
+                    }
+                    QPushButton:hover { background-color: #7f1d1d; }
+                """)
+
+                if confirm.exec() != QMessageBox.StandardButton.Yes:
+                    self.on_result([], [], "DROP DATABASE cancelled.")
+                    return True
+
+                self.db.drop_database()
+                self.on_schema_change()
+                self.history_bar._clear()
+                self.on_result([], [], "Database dropped. All tables and data deleted.")
 
             elif cmd_upper.startswith("DROP TABLE"):
                 if self.db.in_transaction():
@@ -324,7 +492,7 @@ class EditorPanel(QWidget):
                     self.db.current_transaction.add("delete", table_name, conditions=conditions)
                     self.on_result([], [], f"Queued: DELETE from '{table_name}'.")
                 else:
-                    count = self.db.get_table(table_name).delete(conditions)
+                    count = self.db.get_table(table_name).delete(conditions, db=self.db)
                     self.on_result([], [], f"{count} row(s) deleted from '{table_name}'.")
 
             elif cmd_upper.startswith("UPDATE"):

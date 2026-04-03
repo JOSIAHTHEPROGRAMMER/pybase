@@ -1,10 +1,10 @@
 class Transaction:
     """
-    Represents an active transaction -a buffered list of operations
-    that are either all committed or all rolled back.
+    Represents an active transaction with full SAVEPOINT support.
 
-    Atomicity is enforced by validating all operations before applying any.
-    If any operation fails validation, nothing is written to disk or memory.
+    Operations are buffered and applied atomically on COMMIT.
+    SAVEPOINTs allow partial rollback within a transaction without
+    discarding the entire operation buffer.
 
     Each operation is stored as a dict:
     {
@@ -15,8 +15,9 @@ class Transaction:
     """
 
     def __init__(self):
-        self.operations = []
-        self.active = True
+        self.operations  = []
+        self.savepoints  = {}  # name -> index into operations list at save time
+        self.active      = True
 
     def add(self, op_type: str, table_name: str, **kwargs):
         """
@@ -29,25 +30,56 @@ class Transaction:
             "args":  kwargs
         })
 
+    def savepoint(self, name: str):
+        """
+        Create a named savepoint at the current position in the operation buffer.
+        Rolling back to this savepoint discards all operations added after it.
+        Raises if a savepoint with this name already exists.
+        """
+        if name in self.savepoints:
+            raise ValueError(
+                f"Savepoint '{name}' already exists. "
+                "Release it before creating a new one with the same name."
+            )
+        self.savepoints[name] = len(self.operations)
+
+    def rollback_to_savepoint(self, name: str):
+        """
+        Discard all operations buffered after the named savepoint.
+        The savepoint itself is kept so it can be rolled back to again.
+        Raises if the savepoint does not exist.
+        """
+        if name not in self.savepoints:
+            raise ValueError(f"Savepoint '{name}' does not exist.")
+
+        idx = self.savepoints[name]
+        self.operations = self.operations[:idx]
+
+    def release_savepoint(self, name: str):
+        """
+        Remove a named savepoint without rolling back.
+        Operations buffered after the savepoint are kept.
+        Raises if the savepoint does not exist.
+        """
+        if name not in self.savepoints:
+            raise ValueError(f"Savepoint '{name}' does not exist.")
+        del self.savepoints[name]
+
     def commit(self, db) -> list:
         """
         Commit all buffered operations atomically.
 
-        Phase 1 validates everything. If validation fails, the transaction
-        is marked inactive so the user can start fresh without needing ROLLBACK.
-
-        Phase 2 applies all operations only after full validation passes.
+        Phase 1 validates every operation before Phase 2 applies any.
+        If validation fails the transaction is auto-cancelled and nothing lands.
         """
         try:
-            # Phase 1: validate all operations before touching anything
             self._validate_all(db)
         except Exception:
-            # Validation failed - kill the transaction so user can start fresh
             self.operations.clear()
+            self.savepoints.clear()
             self.active = False
-            raise  # re-raise so the error message still shows
+            raise
 
-        # Phase 2: apply all operations now that validation passed
         results = []
 
         for op in self.operations:
@@ -58,7 +90,7 @@ class Transaction:
                 results.append(f"Row inserted into '{op['table']}'.")
 
             elif op["type"] == "delete":
-                count = table.delete(op["args"]["conditions"])
+                count = table.delete(op["args"]["conditions"], db=db)
                 results.append(f"{count} row(s) deleted from '{op['table']}'.")
 
             elif op["type"] == "update":
@@ -72,45 +104,31 @@ class Transaction:
         self.active = False
         return results
 
-
-
-
-
     def _validate_all(self, db):
         """
         Validate every buffered operation without applying any of them.
         Raises on the first violation found.
-
-        For inserts: checks column count, types, UNIQUE, PK, and FK constraints.
-        For updates: checks types, UNIQUE, and FK constraints.
-        For deletes: checks that condition columns exist.
-
-        Uses a snapshot of in-memory rows so validation reflects the
-        actual committed state, not partial transaction state.
         """
         for op in self.operations:
-            table     = db.get_table(op["table"])
-            op_type   = op["type"]
+            table   = db.get_table(op["table"])
+            op_type = op["type"]
 
             if op_type == "insert":
                 row = op["args"]["row"]
 
-                # Column count check
                 if len(row) != len(table.columns):
                     raise ValueError(
                         f"Expected {len(table.columns)} values, got {len(row)}."
                     )
 
-                # Type check
                 for value, (col_name, col_type) in zip(row, table.columns):
                     expected = table.SUPPORTED_TYPES[col_type]
-                    if not isinstance(value, expected):
+                    if value is not None and not isinstance(value, expected):
                         raise TypeError(
                             f"Column '{col_name}' expects '{col_type}', "
                             f"got '{type(value).__name__}'."
                         )
 
-                # NOT NULL on PK
                 if table.primary_key is not None:
                     pk_idx = next(
                         i for i, (n, _) in enumerate(table.columns)
@@ -121,11 +139,9 @@ class Transaction:
                             f"PRIMARY KEY column '{table.primary_key}' cannot be NULL."
                         )
 
-                # Duplicate row check
                 if row in table.rows:
                     raise ValueError("Duplicate row insertion is not allowed.")
 
-                # UNIQUE constraints
                 col_index = table._build_column_index()
                 for unique_col in table.unique_columns:
                     idx = col_index[unique_col]
@@ -135,7 +151,10 @@ class Transaction:
                                 f"Duplicate value for UNIQUE column '{unique_col}'."
                             )
 
-                # FK constraints
+                table._validate_not_null(row)
+                table._validate_composite_primary_key(row)
+                table._validate_composite_unique(row)
+                table._validate_check_constraints(row)
                 table._validate_foreign_keys(row, db)
 
             elif op_type == "update":
@@ -148,7 +167,7 @@ class Transaction:
                         raise ValueError(f"Column '{col}' does not exist.")
 
                     expected = table.SUPPORTED_TYPES[col_types[col]]
-                    if not isinstance(value, expected):
+                    if value is not None and not isinstance(value, expected):
                         raise TypeError(
                             f"Column '{col}' expects '{col_types[col]}', "
                             f"got '{type(value).__name__}'."
@@ -158,6 +177,9 @@ class Transaction:
                         raise ValueError(
                             f"PRIMARY KEY column '{table.primary_key}' cannot be NULL."
                         )
+
+                    if col in table.not_null_columns and value is None:
+                        raise ValueError(f"Column '{col}' cannot be set to NULL.")
 
             elif op_type == "delete":
                 conditions = op["args"]["conditions"]
@@ -172,8 +194,9 @@ class Transaction:
 
     def rollback(self):
         """
-        Discard all buffered operations.
+        Discard all buffered operations and all savepoints.
         Nothing was written to disk so nothing needs to be undone.
         """
         self.operations.clear()
+        self.savepoints.clear()
         self.active = False

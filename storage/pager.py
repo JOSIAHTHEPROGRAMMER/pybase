@@ -24,10 +24,20 @@ class Pager:
         self.row_size = self._calculate_row_size()
 
     def _calculate_row_size(self):
+        """
+        Calculate the fixed byte size of a single row based on column types.
+    
+        """
         size = 0
         for _, column_type in self.columns:
             if column_type == "int":
                 size += 4
+            elif column_type == "bigint":
+                size += 8
+            elif column_type == "float":
+                size += 8
+            elif column_type == "boolean":
+                size += 1
             elif column_type == "string":
                 size += 1 + Serializer.STRING_SIZE
         return size

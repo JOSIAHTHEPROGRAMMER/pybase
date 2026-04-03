@@ -1,9 +1,11 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-    QLabel, QHeaderView, QTabWidget
+    QPlainTextEdit, QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
+     QHeaderView, QTabWidget
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont, QColor
+
+from gui.widgets.font import get_mono_font
 
 BACKGROUND   = "#0f0f0f"
 PANEL        = "#1a1a1a"
@@ -28,10 +30,25 @@ class ResultsPanel(QWidget):
         layout.setSpacing(6)
 
         # Status message above tabs
-        self.message = QLabel("")
-        self.message.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px;")
+        self.message = QPlainTextEdit()
+        self.message.setReadOnly(True)
+        self.message.setFixedHeight(36)
+        self.message.setFont(get_mono_font(11))
+        self.message.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background-color: transparent;
+                color: {TEXT_MUTED};
+                border: none;
+                font-size: 11px;
+                padding: 2px 0px;
+                selection-background-color: #00e59933;
+                selection-color: {TEXT_PRIMARY};
+            }}
+        """)
         layout.addWidget(self.message)
 
+
+        
         # Tab widget
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(f"""
@@ -148,22 +165,64 @@ class ResultsPanel(QWidget):
         Populate the table tab and pass data to chart tab.
         ER diagram is always live and doesn't need data passed to it.
         """
-        self.message.setText(message)
+        self.message.setPlainText(message)
 
         if message.startswith("Error"):
-            self.message.setStyleSheet("font-size: 11px; color: #f87171;")
+            self.message.setStyleSheet(f"""
+                QPlainTextEdit {{
+                    background-color: transparent;
+                    color: #f87171;
+                    border: none;
+                    font-size: 11px;
+                    padding: 2px 0px;
+                    selection-background-color: #f8717133;
+                    selection-color: #f87171;
+                }}
+            """)
+            
         elif message.startswith("Transaction"):
-            self.message.setStyleSheet(f"font-size: 11px; color: {ACCENT};")
+            self.message.setStyleSheet(f"""
+                QPlainTextEdit {{
+                    background-color: transparent;
+                    color: {ACCENT};
+                    border: none;
+                    font-size: 11px;
+                    padding: 2px 0px;
+                    selection-background-color: #00e59933;
+                    selection-color: {ACCENT};
+                }}
+            """)
+
         elif message.startswith("Queued"):
-            self.message.setStyleSheet("font-size: 11px; color: #fbbf24;")
+            self.message.setStyleSheet(f"""
+                QPlainTextEdit {{
+                    background-color: transparent;
+                    color: #fbbf24;
+                    border: none;
+                    font-size: 11px;
+                    padding: 2px 0px;
+                    selection-background-color: #fbbf2433;
+                    selection-color: #fbbf24;
+                }}
+            """)
+
         else:
-            self.message.setStyleSheet(f"font-size: 11px; color: {TEXT_MUTED};")
+            self.message.setStyleSheet(f"""
+                QPlainTextEdit {{
+                    background-color: transparent;
+                    color: {TEXT_MUTED};
+                    border: none;
+                    font-size: 11px;
+                    padding: 2px 0px;
+                    selection-background-color: #00e59933;
+                    selection-color: {TEXT_PRIMARY};
+                }}
+            """)
 
         self.table.clear()
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
 
-        # Pass data to chart - it decides whether to render based on content
         self.chart_panel.update_chart(columns, rows)
 
         if not columns or not rows:
@@ -184,6 +243,7 @@ class ResultsPanel(QWidget):
                     Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
                 )
                 self.table.setItem(row_idx, col_idx, item)
+
 
     def refresh_er(self):
         """

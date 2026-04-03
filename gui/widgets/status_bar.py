@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLabel
-from PyQt6.QtCore import Qt
+
 
 BACKGROUND   = "#0f0f0f"
 BORDER       = "#2e2e2e"

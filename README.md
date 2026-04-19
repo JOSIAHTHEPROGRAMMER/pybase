@@ -6,7 +6,7 @@
 ![GUI](https://img.shields.io/badge/GUI-PyQt6-41CD52?style=flat&logo=qt&logoColor=white)
 ![Storage](https://img.shields.io/badge/Storage-Binary%20%2B%20JSON-orange?style=flat)
 
-PyBase is a minimal relational database engine built from scratch in Python. It implements real database internals - custom binary storage, B-Tree indexing, schema persistence, constraints, transactions, and a full operator system - without any external libraries.
+PyBase is a minimal relational database engine built from scratch in Python. It implements real database internals — custom binary storage, B-Tree indexing, schema persistence, a full constraint system, transactions with savepoints, and a complete query system — without any external libraries except PyQt6 and matplotlib for the GUI.
 
 ---
 
@@ -14,30 +14,46 @@ PyBase is a minimal relational database engine built from scratch in Python. It 
 
 <img width="1918" height="1012" alt="PyBase GUI" src="https://github.com/user-attachments/assets/7e0a8dfa-d84a-4d62-a828-9ac1ff241972" />
 
+---
+
 ## Features
 
 **Core Engine**
 
-- **Full CRUD** - `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TABLE`
-- **SQL-like syntax** - case-insensitive keywords and column names
-- **File-based persistence** - rows stored in binary `.db` files, schema in `.schema` JSON files
-- **Schema persistence** - table definitions, constraints, indexes, and foreign keys survive restarts
-- **B-Tree indexing** - `CREATE INDEX` for O(log n) equality lookups, auto-maintained on insert, update, delete
-- **Multi-statement execution** - run full scripts separated by semicolons
+- Full CRUD — `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TABLE`, `DROP DATABASE`
+- SQL-like syntax — case-insensitive keywords, all column names normalised to lowercase
+- File-based persistence — rows stored in binary `.db` files, schema in `.schema` JSON files
+- Schema persistence — table definitions, constraints, indexes, and foreign keys survive restarts
+- B-Tree indexing — `CREATE INDEX` for O(log n) equality lookups, auto-maintained on insert, update, delete
+- Multi-statement execution — run full scripts separated by semicolons
 
 **Constraints**
 
-- `PRIMARY KEY` - UNIQUE + NOT NULL, one per table
-- `UNIQUE` - no duplicate values in the column
-- `FOREIGN KEY` - `REFERENCES` syntax with FK violation enforcement on insert and update
+- `PRIMARY KEY` — UNIQUE + NOT NULL, single column or composite spanning multiple columns
+- `UNIQUE` — single column or composite spanning multiple columns
+- `NOT NULL` — enforced on insert and update
+- `DEFAULT` — applied when a column is omitted or passed NULL on insert or update
+- `CHECK` — arbitrary comparison constraint evaluated on every insert and update
+- `AUTO_INCREMENT` — integer counter persisted to schema so values are never reused after restart
+- `FOREIGN KEY` — `REFERENCES` syntax with enforcement on insert, update, and two-phase commit
+- `ON DELETE CASCADE` — child rows deleted automatically when a parent row is deleted
+- `ON UPDATE CASCADE` — child FK values updated automatically when a parent PK value changes
 - Duplicate row prevention
 
 **Query System**
 
-- **Column projection** - `SELECT name, id FROM ...` or `SELECT *`
-- **ORDER BY** - `ASC` and `DESC` on any column
-- **LIMIT** - cap result set size
-- **Rich WHERE clauses** - full operator support:
+- Column projection — `SELECT name, id FROM ...` or `SELECT *`
+- `SELECT DISTINCT` — removes duplicate rows from the result
+- Column aliases — `SELECT salary AS pay FROM emp`
+- Table aliases — `FROM employees AS e`
+- `ORDER BY` — `ASC` and `DESC` on any column
+- `LIMIT` — cap result set size
+- `GROUP BY` with `HAVING` — group rows and filter groups
+- Aggregate functions — `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
+- Set operations — `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
+- Subqueries — in `WHERE` with `IN`, `EXISTS`, `ANY`, `ALL`
+- B-Tree index used automatically for single equality conditions on indexed columns
+- Rich WHERE clauses:
   - Comparison: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`
   - Logical: `AND`, `OR`, `NOT`
   - Range: `BETWEEN low AND high`
@@ -50,21 +66,29 @@ PyBase is a minimal relational database engine built from scratch in Python. It 
 **Transactions**
 
 - `BEGIN`, `COMMIT`, `ROLLBACK`
-- Two-phase commit - validates all operations before applying any (true atomicity)
+- Two-phase commit — validates all operations before applying any (true atomicity)
 - FK constraints validated at commit time
-- Failed commits auto-cancel the transaction - no manual ROLLBACK needed
+- Failed commits auto-cancel the transaction — no manual `ROLLBACK` needed
+- `SAVEPOINT name` — create a named restore point inside a transaction
+- `ROLLBACK TO SAVEPOINT name` — undo back to a savepoint without ending the transaction
+- `RELEASE SAVEPOINT name` — discard a savepoint
+- Nested transactions blocked
 
 **Desktop GUI**
 
 - SQL editor with syntax highlighting and `Ctrl+Enter` to run
+- `Ctrl+/` to toggle line comments on selected lines
+- Run selected text only — highlight a statement and run just that
 - Multi-statement execution with comment stripping
-- Query history dropdown - persisted to `data/history.json`
+- Query history dropdown — persisted to `data/history.json`
 - Results table with row numbers and column headers
-- Bar, line, pie, scatter, and histogram chart tab
+- Bar, line, pie, scatter, and histogram chart tab via matplotlib
 - Live ER diagram tab with crow's foot notation and FK relationship lines
-- Schema browser with table row counts, column types, and constraint tags
-- Transaction status indicator
-- Dark Neon-inspired theme
+- Schema browser with table row counts, column types, and constraint tags (PK, FK, UQ, IDX)
+- Transaction status indicator — green dot when a transaction is active
+- `DROP TABLE` and `DROP DATABASE` confirmation dialogs
+- Error and status messages are selectable and copyable
+- Dark Neon theme — `#0f0f0f` background, `#00e599` accent
 
 ---
 
@@ -73,60 +97,51 @@ PyBase is a minimal relational database engine built from scratch in Python. It 
 ```
 pybase/
 ├── core/
-│   ├── __init__.py
 │   ├── database.py         # Database registry, table lifecycle, transaction management
 │   ├── table.py            # Table operations, constraint enforcement, query execution
-│   └── transaction.py      # Two-phase atomic commit, BEGIN / COMMIT / ROLLBACK
+│   └── transaction.py      # Two-phase atomic commit, savepoints, BEGIN/COMMIT/ROLLBACK
 ├── gui/
-│   ├── __init__.py
 │   ├── main.py             # QApplication entry point
 │   ├── main_window.py      # MainWindow, assembles all panels
 │   ├── panels/
-│   │   ├── __init__.py
 │   │   ├── chart.py        # Bar, line, pie, scatter, histogram charts
 │   │   ├── editor.py       # SQL editor, syntax highlighting, history, run button
 │   │   ├── er_diagram.py   # Live ER diagram with crow's foot FK notation
 │   │   ├── results.py      # Tabbed results panel
 │   │   └── schema.py       # Schema browser with row counts and constraint tags
 │   └── widgets/
-│       ├── __init__.py
 │       ├── font.py         # Monospace font fallback helper
 │       ├── highlighter.py  # SQL syntax highlighter
 │       ├── history.py      # Query history dropdown with persistence
 │       └── status_bar.py   # Transaction status indicator
 ├── query/
-│   ├── __init__.py
-│   └── expression.py       # Full expression evaluator, OR, IN, BETWEEN, LIKE, IS NULL, arithmetic, bitwise
+│   └── expression.py       # Full expression evaluator — comparisons, logical, arithmetic, bitwise, subqueries
 ├── storage/
-│   ├── __init__.py
 │   ├── btree.py            # B-Tree and BTreeNode data structures
 │   ├── index_manager.py    # Owns and manages B-Tree indexes per table
 │   ├── pager.py            # Binary row file read/write
 │   ├── schema_manager.py   # JSON schema persistence per table
-│   └── serializer.py       # Row serialization to/from bytes
+│   └── serializer.py       # Row serialization to/from fixed-width bytes
 ├── tests/
 │   └── test_pybase.py      # Full test suite
-├── __init__.py
-├── .gitignore
-├── cli.py                  # SQL parser and REPL entry point
-└── README.md
+└── cli.py                  # SQL parser, dispatcher, and REPL entry point
 ```
 
 ### Layer Responsibilities
 
-| Layer                       | Responsibility                                                         |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `cli.py`                    | Parse SQL strings, dispatch to database, print results                 |
-| `core/database.py`          | Own all tables, manage transactions, reload tables on startup          |
-| `core/table.py`             | Validate and execute all row operations, enforce constraints           |
-| `core/transaction.py`       | Two-phase atomic commit, buffer operations, apply or discard           |
-| `query/expression.py`       | Evaluate WHERE expressions including OR, IN, BETWEEN, LIKE, arithmetic |
-| `storage/pager.py`          | Append rows to disk, rewrite file after delete/update                  |
-| `storage/serializer.py`     | Convert rows to fixed-width binary and back                            |
-| `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                          |
-| `storage/btree.py`          | Sorted key-value tree with O(log n) search                             |
-| `storage/index_manager.py`  | Create, rebuild, and query B-Tree indexes                              |
-| `gui/`                      | PyQt6 desktop interface - editor, results, charts, ER diagram          |
+| Layer                       | Responsibility                                                |
+| --------------------------- | ------------------------------------------------------------- |
+| `cli.py`                    | Parse SQL strings, dispatch to database, print results        |
+| `core/database.py`          | Own all tables, manage transactions, reload tables on startup |
+| `core/table.py`             | Validate and execute all row operations, enforce constraints  |
+| `core/transaction.py`       | Two-phase atomic commit, buffer operations, savepoints        |
+| `query/expression.py`       | Evaluate WHERE expressions including subquery types           |
+| `storage/pager.py`          | Append rows to disk, rewrite file after delete/update         |
+| `storage/serializer.py`     | Convert rows to fixed-width binary and back                   |
+| `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                 |
+| `storage/btree.py`          | Sorted key-value tree with O(log n) search                    |
+| `storage/index_manager.py`  | Create, rebuild, and query B-Tree indexes                     |
+| `gui/`                      | PyQt6 desktop interface — editor, results, charts, ER diagram |
 
 ---
 
@@ -156,104 +171,90 @@ cd pybase
 python -m gui.main
 ```
 
+### Run Tests
+
+```bash
+cd pybase
+pytest tests/test_pybase.py -v -s
+```
+
 ---
-
-### Preview
-
-<img src="images/pybase.jpg"/>
-
 
 ## Supported SQL Syntax
 
 ### DDL
 
 ```sql
--- Create a table
 CREATE TABLE users (id int PRIMARY KEY, name string);
 
--- Create a table with foreign key
 CREATE TABLE employees (
-    id int PRIMARY KEY,
-    name string,
-    salary int,
-    dept_id int REFERENCES departments(id)
+    id int PRIMARY KEY AUTO_INCREMENT,
+    name string NOT NULL,
+    salary int DEFAULT 50000 CHECK (salary > 0),
+    dept_id int REFERENCES departments(id) ON DELETE CASCADE ON UPDATE CASCADE
 );
 
--- Drop a table
 DROP TABLE users;
 
--- Create a B-Tree index
 CREATE INDEX ON users (id);
 ```
 
 ### DML
 
 ```sql
--- Insert a row
 INSERT INTO users VALUES (1, 'Alice');
 
--- Select all rows
 SELECT * FROM users;
 
--- Select with column projection
-SELECT name FROM users;
+SELECT DISTINCT dept_id FROM employees;
 
--- WHERE with comparison operators
-SELECT * FROM users WHERE id = 1;
-SELECT * FROM users WHERE id >= 2 AND id != 4;
+SELECT name AS employee, salary AS pay FROM employees;
 
--- WHERE with OR
-SELECT * FROM employees WHERE dept_id = 1 OR dept_id = 2;
-
--- WHERE with IN
+SELECT * FROM employees WHERE id = 1;
+SELECT * FROM employees WHERE salary BETWEEN 60000 AND 90000;
+SELECT * FROM employees WHERE name LIKE 'A%';
+SELECT * FROM employees WHERE dept_id IS NULL;
+SELECT * FROM employees WHERE salary + 5000 > 100000;
 SELECT * FROM employees WHERE dept_id IN (1, 2, 3);
 
--- WHERE with BETWEEN
-SELECT * FROM employees WHERE salary BETWEEN 60000 AND 90000;
+SELECT dept_id, COUNT(*), AVG(salary) FROM employees GROUP BY dept_id;
+SELECT dept_id, COUNT(*) FROM employees GROUP BY dept_id HAVING COUNT(*) > 1;
 
--- WHERE with LIKE
-SELECT * FROM employees WHERE name LIKE 'A%';
-SELECT * FROM employees WHERE name LIKE '_ob';
+SELECT name FROM employees WHERE dept_id IN (SELECT id FROM departments WHERE name = 'Engineering');
+SELECT name FROM employees WHERE salary > ANY (SELECT salary FROM employees WHERE dept_id = 3);
+SELECT name FROM employees WHERE salary > ALL (SELECT salary FROM employees WHERE dept_id = 3);
+SELECT id FROM departments WHERE EXISTS (SELECT id FROM employees WHERE dept_id = 1);
 
--- WHERE with IS NULL
-SELECT * FROM employees WHERE dept_id IS NULL;
-SELECT * FROM employees WHERE dept_id IS NOT NULL;
+SELECT name FROM departments
+UNION
+SELECT name FROM employees;
 
--- WHERE with arithmetic
-SELECT * FROM employees WHERE salary + 5000 > 100000;
+SELECT * FROM employees ORDER BY salary DESC LIMIT 5;
 
--- ORDER BY and LIMIT
-SELECT * FROM users ORDER BY name ASC;
-SELECT * FROM users ORDER BY id DESC LIMIT 10;
+UPDATE employees SET salary = 95000 WHERE id = 1;
 
--- Full SELECT
-SELECT name, salary FROM employees
-WHERE dept_id = 1 AND salary > 80000
-ORDER BY salary DESC
-LIMIT 5;
-
--- Update rows
-UPDATE users SET name = 'Alice2' WHERE id = 1;
-
--- Delete rows
-DELETE FROM users WHERE id = 1;
+DELETE FROM employees WHERE id = 1;
 ```
 
-### Transactions
+### Transactions and Savepoints
 
 ```sql
--- Commit - both rows land atomically or neither does
 BEGIN;
 INSERT INTO users VALUES (3, 'Charlie');
 INSERT INTO users VALUES (4, 'Dave');
 COMMIT;
 
--- Rollback - nothing is written
 BEGIN;
 INSERT INTO users VALUES (5, 'Eve');
 ROLLBACK;
 
--- FK violation at commit - transaction auto-cancelled, nothing lands
+BEGIN;
+INSERT INTO employees VALUES (1, 'Alice', 90000, 1);
+SAVEPOINT after_alice;
+INSERT INTO employees VALUES (2, 'Bob', 80000, 1);
+ROLLBACK TO SAVEPOINT after_alice;
+COMMIT;
+
 BEGIN;
 INSERT INTO employees VALUES (9, 'Alice Jr', 60000, 1);
 INSERT INTO employees VALUES (10, 'Bad FK', 60000, 99);
@@ -264,21 +265,31 @@ COMMIT;
 
 ## Data Types
 
-| Type     | Python equivalent | Storage size                     |
-| -------- | ----------------- | -------------------------------- |
-| `int`    | `int`             | 4 bytes (signed)                 |
-| `string` | `str`             | 256 bytes (1 length + 255 chars) |
+| Type      | Python equivalent | Storage size            |
+| --------- | ----------------- | ----------------------- |
+| `int`     | `int`             | 4 bytes signed          |
+| `bigint`  | `int`             | 8 bytes signed          |
+| `float`   | `float`           | 8 bytes IEEE 754 double |
+| `boolean` | `bool`            | 1 byte                  |
+| `string`  | `str`             | 256 bytes fixed width   |
 
 ---
 
 ## Constraints
 
-| Constraint     | Behavior                                                                        |
-| -------------- | ------------------------------------------------------------------------------- |
-| `PRIMARY KEY`  | UNIQUE + NOT NULL, one per table                                                |
-| `UNIQUE`       | No duplicate values in the column                                               |
-| `REFERENCES`   | FK value must exist in referenced table, enforced on insert, update, and commit |
-| Duplicate rows | Exact duplicate rows always rejected                                            |
+| Constraint              | Behaviour                                                                    |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `PRIMARY KEY`           | UNIQUE + NOT NULL, single column or composite                                |
+| `COMPOSITE PRIMARY KEY` | Uniqueness enforced across the combination of columns                        |
+| `UNIQUE`                | No duplicate values, single column or composite                              |
+| `NOT NULL`              | Rejects NULL on insert and update                                            |
+| `DEFAULT`               | Substituted when value is omitted or NULL                                    |
+| `CHECK`                 | Arbitrary comparison evaluated on insert and update                          |
+| `AUTO_INCREMENT`        | Counter persisted to schema, never reused after restart                      |
+| `FOREIGN KEY`           | Value must exist in referenced table, enforced on insert, update, and commit |
+| `ON DELETE CASCADE`     | Child rows deleted automatically when parent is deleted                      |
+| `ON UPDATE CASCADE`     | Child FK values updated automatically when parent PK changes                 |
+| Duplicate rows          | Exact duplicate rows always rejected                                         |
 
 ---
 
@@ -286,33 +297,33 @@ COMMIT;
 
 Each table produces two files in the `data/` directory:
 
-| File                | Contents                                                  |
-| ------------------- | --------------------------------------------------------- |
-| `table_name.db`     | Fixed-width binary row data                               |
-| `table_name.schema` | JSON - columns, types, constraints, indexes, foreign keys |
+| File                | Contents                                                                          |
+| ------------------- | --------------------------------------------------------------------------------- |
+| `table_name.db`     | Fixed-width binary row data                                                       |
+| `table_name.schema` | JSON — columns, types, constraints, indexes, foreign keys, auto increment counter |
 
-On startup, the database scans `data/` for `.schema` files and reloads all tables automatically, including rebuilding B-Tree indexes and restoring FK definitions.
+On startup the database scans `data/` for `.schema` files and reloads all tables automatically, rebuilding B-Tree indexes and restoring all constraint definitions.
 
 ---
 
 ## Transactions
 
-PyBase uses a **two-phase atomic commit** model:
+PyBase uses a two-phase atomic commit model:
 
 - `BEGIN` starts buffering `INSERT`, `UPDATE`, and `DELETE` operations
 - `COMMIT` runs Phase 1 (validate all operations) then Phase 2 (apply all operations)
 - If Phase 1 finds any violation, nothing is applied and the transaction is auto-cancelled
-- `ROLLBACK` discards the buffer - nothing is written
+- `ROLLBACK` discards the buffer — nothing is written
+- `SAVEPOINT name` creates a named restore point inside the active transaction
+- `ROLLBACK TO SAVEPOINT name` undoes back to that point without ending the transaction
+- `RELEASE SAVEPOINT name` discards a savepoint once it is no longer needed
 - `SELECT` always reads live committed data, even inside a transaction
-- `DROP TABLE` is blocked inside a transaction
+- `DROP TABLE` and `DROP DATABASE` are blocked inside a transaction
 - Nested transactions are not supported
-- Failed commits automatically cancel the transaction - no manual ROLLBACK needed
 
 ---
 
 ## GUI
-
-Run the desktop interface:
 
 ```bash
 python -m gui.main

@@ -6,24 +6,38 @@ class SQLHighlighter(QSyntaxHighlighter):
     """
     Syntax highlighter for the SQL editor.
     Applies color rules to keywords, types, strings, numbers, and comments.
-    Extends QSyntaxHighlighter - Qt calls highlightBlock() on each line automatically.
+    Extends QSyntaxHighlighter. Qt calls highlightBlock on each line automatically.
     """
 
-    # Neon palette
-    COLOR_KEYWORD = "#00e599"  # accent green - SELECT, FROM, WHERE etc.
-    COLOR_TYPE    = "#60a5fa"  # blue - int, string
-    COLOR_STRING  = "#fbbf24"  # amber - 'quoted values'
-    COLOR_NUMBER  = "#f87171"  # red - numeric literals
-    COLOR_COMMENT = "#555555"  # grey - -- comments
+    COLOR_KEYWORD = "#00e599"
+    COLOR_TYPE    = "#60a5fa"
+    COLOR_STRING  = "#fbbf24"
+    COLOR_NUMBER  = "#f87171"
+    COLOR_COMMENT = "#555555"
 
     KEYWORDS = [
+        # Core DML
         "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES",
-        "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "DROP",
-        "INDEX", "ON", "PRIMARY", "KEY", "UNIQUE", "ORDER", "BY",
-        "ASC", "DESC", "LIMIT", "AND", "OR", "NOT", "NULL",
-        "BEGIN", "COMMIT", "ROLLBACK", "IN", "IS", "LIKE",
-        "BETWEEN", "REFERENCES", "FOREIGN", "TRUE", "FALSE",
-        "AUTO_INCREMENT", "DEFAULT", "CHECK", "DATABASE",
+        "UPDATE", "SET", "DELETE",
+        # DDL
+        "CREATE", "TABLE", "DROP", "INDEX", "DATABASE",
+        # Constraints and keys
+        "ON", "PRIMARY", "KEY", "UNIQUE", "FOREIGN",
+        "REFERENCES", "AUTO_INCREMENT", "DEFAULT", "CHECK",
+        # Filtering and ordering
+        "WHERE", "ORDER", "BY", "ASC", "DESC", "LIMIT",
+        "AND", "OR", "NOT", "NULL", "IS", "IN", "LIKE", "BETWEEN",
+        # Transactions and savepoints
+        "BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE",
+        # Boolean literals
+        "TRUE", "FALSE",
+        # Batch C: query system
+        "DISTINCT",
+        "AS",
+        "UNION", "INTERSECT", "EXCEPT", "ALL",
+        "GROUP", "HAVING",
+        "EXISTS", "ANY",
+        "COUNT", "SUM", "AVG", "MIN", "MAX",
     ]
 
     TYPES = ["INT", "BIGINT", "FLOAT", "BOOLEAN", "BOOL", "STRING"]
@@ -42,7 +56,6 @@ class SQLHighlighter(QSyntaxHighlighter):
         return fmt
 
     def _build_rules(self):
-        # SQL keywords - whole word match, case insensitive
         keyword_fmt = self._fmt(self.COLOR_KEYWORD, bold=True)
         for kw in self.KEYWORDS:
             self.rules.append((
@@ -50,7 +63,6 @@ class SQLHighlighter(QSyntaxHighlighter):
                 keyword_fmt
             ))
 
-        # Data types
         type_fmt = self._fmt(self.COLOR_TYPE)
         for t in self.TYPES:
             self.rules.append((
@@ -58,7 +70,7 @@ class SQLHighlighter(QSyntaxHighlighter):
                 type_fmt
             ))
 
-        # Single-quoted strings: 'value'
+        # Single-quoted strings
         self.rules.append((
             re.compile(r"'[^']*'"),
             self._fmt(self.COLOR_STRING)
@@ -70,7 +82,7 @@ class SQLHighlighter(QSyntaxHighlighter):
             self._fmt(self.COLOR_NUMBER)
         ))
 
-        # Single-line comments: -- comment
+        # Single-line comments
         self.rules.append((
             re.compile(r"--[^\n]*"),
             self._fmt(self.COLOR_COMMENT)
@@ -79,7 +91,7 @@ class SQLHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text: str):
         """
         Called by Qt automatically for each line of text.
-        Applies all rules in order - later rules override earlier ones.
+        Applies all rules in order. Later rules override earlier ones.
         """
         for pattern, fmt in self.rules:
             for match in pattern.finditer(text):

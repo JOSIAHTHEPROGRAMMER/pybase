@@ -126,6 +126,33 @@ def _parse_single_condition(part: str) -> dict:
     """
     upper = part.upper()
 
+    if upper.startswith("EXISTS"):
+        inner = part[6:].strip().strip("()")
+        return {"type": "exists", "subquery": inner}
+    
+    if " IN " in upper and "SELECT" in upper:
+        in_idx = upper.index(" IN ")
+        col    = part[:in_idx].strip().lower()
+        inner  = part[in_idx + 4:].strip().strip("()")
+        return {"type": "subquery_in", "column": col, "subquery": inner}
+
+
+    for qualifier in ("ANY", "ALL"):
+        for op in (">=", "<=", "!=", "<>", ">", "<", "="):
+            token = f"{op} {qualifier}"
+            if token in upper:
+                idx  = upper.index(token)
+                col  = part[:idx].strip().lower()
+                inner = part[idx + len(token):].strip().strip("()")
+                return {
+                    "type":      "any_all",
+                    "column":    col,
+                    "op":        op,
+                    "qualifier": qualifier,
+                    "subquery":  inner
+                }
+
+
     if " IS NOT NULL" in upper:
         col = part[:upper.index(" IS NOT NULL")].strip().lower()
         return {"type": "is_null", "column": col, "negated": True}
@@ -173,7 +200,7 @@ def _parse_single_condition(part: str) -> dict:
             arithmetic = None
 
             for aop in arith_ops:
-                if aop in col:
+                if "(" not in col and aop in col:
                     col_part, _, operand_part = col.partition(aop)
                     col        = col_part.strip()
                     arithmetic = {"op": aop, "operand": _parse_value(operand_part.strip())}
@@ -435,6 +462,22 @@ def parse_insert(command: str):
         row.append(_parse_value(val))
     return table_name, row
 
+def _detect_set_operator(command: str):
+            depth = 0
+            upper = command.upper()
+            for op in ("UNION ALL", "UNION", "INTERSECT", "EXCEPT"):
+                i = 0
+                while i < len(upper):
+                    if upper[i] == "(": depth += 1
+                    elif upper[i] == ")": depth -= 1
+                    elif depth == 0 and upper[i:i+len(op)] == op:
+                        prev_ok = i == 0 or upper[i-1] == " "
+                        next_ok = i + len(op) >= len(upper) or upper[i+len(op)] == " "
+                        if prev_ok and next_ok:
+                            return op, command[:i].strip(), command[i+len(op):].strip()
+                    i += 1
+                depth = 0
+            return None
 
 def parse_select(command: str):
     """
@@ -451,10 +494,32 @@ def parse_select(command: str):
 
     raw_cols = select_part[select_part.upper().index("SELECT") + 6:].strip()
 
+
+
+    distinct = False
+    if raw_cols.upper().startswith("DISTINCT"):
+        distinct  = True
+        raw_cols  = raw_cols[8:].strip()
+
     if raw_cols.strip() == "*":
         selected_columns = ["*"]
     else:
-        selected_columns = [col.strip().lower() for col in raw_cols.split(",")]
+        selected_columns = []
+        alias_map = {}
+        for col in raw_cols.split(","):
+            col = col.strip()
+            upper = col.upper()
+            if " AS " in upper:
+                idx  = upper.index(" AS ")
+                name = col[:idx].strip().lower()
+                alias = col[idx + 4:].strip().lower()
+                selected_columns.append(name)
+                alias_map[name] = alias
+            else:
+                selected_columns.append(col.lower())
+  
+
+
 
     limit = None
     if "LIMIT" in rest.upper():
@@ -475,6 +540,19 @@ def parse_select(command: str):
             order_dir = order_parts[1].upper() if len(order_parts) > 1 else "ASC"
             order_by  = (order_col, order_dir)
 
+    group_by = []
+    having   = []
+    if "GROUP BY" in rest.upper():
+        gb_idx   = rest.upper().index("GROUP BY")
+        gb_clause = rest[gb_idx + 8:].strip()
+        rest      = rest[:gb_idx].strip()
+        if "HAVING" in gb_clause.upper():
+            hav_idx   = gb_clause.upper().index("HAVING")
+            having    = parse_conditions(gb_clause[hav_idx + 6:].strip())
+            gb_clause = gb_clause[:hav_idx].strip()
+        group_by = [c.strip().lower() for c in gb_clause.split(",")]
+   
+   
     conditions = []
     if "WHERE" in rest.upper():
         where_idx  = rest.upper().index("WHERE")
@@ -484,8 +562,39 @@ def parse_select(command: str):
     else:
         table_name = rest.strip()
 
-    return table_name, selected_columns, conditions, order_by, limit
+    if " AS " in table_name.upper():
+        idx = table_name.upper().index(" AS ")
+        table_name = table_name[:idx].strip()
 
+    return table_name, selected_columns, conditions, order_by, limit, distinct, group_by, having
+
+def resolve_subqueries(conditions: list, db):
+    for cond in conditions:
+        ctype = cond.get("type")
+        if ctype in ("and", "or"):
+            resolve_subqueries([cond["left"]], db)
+            resolve_subqueries([cond["right"]], db)
+        elif ctype == "not":
+            resolve_subqueries([cond["condition"]], db)
+        elif ctype == "exists":
+            t, sc, c, o, l, d, g, h = parse_select(cond["subquery"])
+            table = db.get_table(t)
+            rows = table.select_aggregate(sc, c, g, h) if g else table.select_advanced(sc, c, o, l, distinct=d)
+            cond["rows"] = rows
+            del cond["subquery"]
+        elif ctype == "subquery_in":
+            t, sc, c, o, l, d, g, h = parse_select(cond["subquery"])
+            table = db.get_table(t)
+            rows = table.select_aggregate(sc, c, g, h) if g else table.select_advanced(sc, c, o, l, distinct=d)
+            cond["values"] = [row[0] if isinstance(row, list) else row for row in rows]
+            cond["type"] = "in"
+            del cond["subquery"]
+        elif ctype == "any_all":
+            t, sc, c, o, l, d, g, h = parse_select(cond["subquery"])
+            table = db.get_table(t)
+            rows = table.select_aggregate(sc, c, g, h) if g else table.select_advanced(sc, c, o, l, distinct=d)
+            cond["values"] = [row[0] if isinstance(row, list) else row for row in rows]
+            del cond["subquery"]
 
 def parse_delete(command: str):
     """
@@ -686,12 +795,46 @@ def main():
                     print(f"Row inserted into '{table_name}' successfully!")
 
             elif cmd_upper.startswith("SELECT"):
-                table_name, selected_columns, conditions, order_by, limit = parse_select(command)
-                table = db.get_table(table_name)
-                rows  = table.select_advanced(selected_columns, conditions, order_by, limit)
+                set_op = _detect_set_operator(command)
+                if set_op:
+                    operator, left_sql, right_sql = set_op
+                    def exec_side(s):
+                        t, sc, c, o, l, d, g, h = parse_select(s)
+                        resolve_subqueries(c, db)
+                        table = db.get_table(t)
+                        return table.select_aggregate(sc, c, g, h) if g else table.select_advanced(sc, c, o, l, distinct=d)
+                    left_rows  = exec_side(left_sql)
+                    right_rows = exec_side(right_sql)
+                    if operator == "UNION ALL":
+                        rows = left_rows + right_rows
+                    elif operator == "UNION":
+                        seen, rows = [], []
+                        for row in left_rows + right_rows:
+                            if row not in seen:
+                                seen.append(row); rows.append(row)
+                    elif operator == "INTERSECT":
+                        seen, rows = [], []
+                        for row in left_rows:
+                            if row in right_rows and row not in seen:
+                                seen.append(row); rows.append(row)
+                    elif operator == "EXCEPT":
+                        seen, rows = [], []
+                        for row in left_rows:
+                            if row not in right_rows and row not in seen:
+                                seen.append(row); rows.append(row)
+                    else:
+                        rows = left_rows
+                else:
+                    table_name, selected_columns, conditions, order_by, limit, distinct, group_by, having = parse_select(command)
+                    resolve_subqueries(conditions, db)
+                    table = db.get_table(table_name)
+                    if group_by:
+                        rows = table.select_aggregate(selected_columns, conditions, group_by, having)
+                    else:
+                        rows = table.select_advanced(selected_columns, conditions, order_by, limit, distinct=distinct)
                 for r in rows:
                     print(r)
-
+                    
             elif cmd_upper.startswith("DELETE FROM"):
                 table_name, conditions = parse_delete(command)
 

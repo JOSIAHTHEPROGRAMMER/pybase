@@ -9,7 +9,7 @@ from gui.widgets.font import get_mono_font
 from cli import (
     parse_create_table, parse_insert, parse_select,
     parse_delete, parse_update, parse_create_index,
-    parse_drop_table
+    parse_drop_table, _detect_set_operator, resolve_subqueries
 )
 from gui.widgets.highlighter import SQLHighlighter
 from gui.widgets.history import QueryHistoryBar
@@ -474,16 +474,16 @@ class EditorPanel(QWidget):
                     self.on_result([], [], f"Row inserted into '{table_name}'.")
 
             elif cmd_upper.startswith("SELECT"):
-                # SELECT always executes immediately, reads live data
-                table_name, selected_columns, conditions, order_by, limit = parse_select(command)
-                table = self.db.get_table(table_name)
-                rows = table.select_advanced(selected_columns, conditions, order_by, limit)
-
-                if selected_columns == ["*"]:
-                    col_names = [col[0] for col in table.columns]
+                set_op = _detect_set_operator(command)
+                if set_op:
+                    rows, col_names = self._execute_set_operation(set_op)
                 else:
-                    col_names = selected_columns
-
+                    (table_name, selected_columns, conditions,
+                    order_by, limit, distinct, group_by, having) = parse_select(command)
+                    rows, col_names = self._execute_select(
+                        table_name, selected_columns, conditions,
+                        order_by, limit, distinct, group_by, having
+                    )
                 self.on_result(col_names, rows, f"{len(rows)} row(s) returned.")
 
             elif cmd_upper.startswith("DELETE FROM"):
@@ -519,3 +519,80 @@ class EditorPanel(QWidget):
         except Exception as e:
             self.on_result([], [], f"Error in '{command[:40]}...': {e}")
             return False
+
+
+    def _execute_select(self, table_name, selected_columns, conditions,
+                        order_by, limit, distinct, group_by, having):
+        """
+        Resolve subqueries in conditions, then run select_aggregate or
+        select_advanced depending on whether GROUP BY is present.
+        Returns (rows, col_names).
+        """
+        table = self.db.get_table(table_name)
+
+        # Resolve subqueries inside conditions before evaluation
+        resolve_subqueries(conditions, self.db)
+        
+        if group_by:
+            rows = table.select_aggregate(selected_columns, conditions, group_by, having)
+        else:
+            rows = table.select_advanced(
+                selected_columns, conditions, order_by, limit, distinct=distinct
+            )
+
+        if selected_columns == ["*"]:
+            col_names = [col[0] for col in table.columns]
+        else:
+            col_names = selected_columns
+
+        return rows, col_names
+
+
+
+    def _execute_set_operation(self, set_op):
+        """
+        Execute UNION, UNION ALL, INTERSECT, or EXCEPT.
+        Parses and executes each side independently then merges.
+        Returns (rows, col_names).
+        """
+        operator, left_sql, right_sql = set_op
+
+        (lt, lc, lcond, lo, ll, ld, lg, lh) = parse_select(left_sql)
+        (rt, rc, rcond, ro, rl, rd, rg, rh) = parse_select(right_sql)
+
+        left_rows,  col_names = self._execute_select(lt, lc, lcond, lo, ll, ld, lg, lh)
+        right_rows, _         = self._execute_select(rt, rc, rcond, ro, rl, rd, rg, rh)
+
+        if operator == "UNION ALL":
+            result = left_rows + right_rows
+
+        elif operator == "UNION":
+            seen   = []
+            result = []
+            for row in left_rows + right_rows:
+                if row not in seen:
+                    seen.append(row)
+                    result.append(row)
+
+        elif operator == "INTERSECT":
+            seen, result = [], []
+            for row in left_rows:
+                if row in right_rows and row not in seen:
+                    seen.append(row)
+                    result.append(row)
+
+        elif operator == "EXCEPT":
+            seen, result = [], []
+            for row in left_rows:
+                if row not in right_rows and row not in seen:
+                    seen.append(row)
+                    result.append(row)
+        else:
+            result = left_rows
+
+        return result, col_names
+    
+
+
+
+

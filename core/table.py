@@ -657,7 +657,7 @@ class Table:
         return [row for row in self.rows if row[column_index] == value]
 
     def select_advanced(self, selected_columns: list, conditions: list,
-                        order_by: tuple = None, limit: int = None):
+                        order_by: tuple = None, limit: int = None, distinct: bool = False):
         """
         Full SELECT with column projection, WHERE filtering, ORDER BY, and LIMIT.
 
@@ -669,7 +669,18 @@ class Table:
         Uses B-Tree index for single equality conditions on indexed columns.
         Falls back to full table scan for all other cases.
         LIMIT applied last after filtering, ordering, and projection.
+
+
+
+
         """
+
+        if selected_columns != ["*"]:
+            for col in selected_columns:
+                if "(" not in col and col not in [c[0] for c in self.columns]:
+                    raise ValueError(f"Column '{col}' does not exist.")
+
+
         if selected_columns != ["*"]:
             for col in selected_columns:
                 if col not in [c[0] for c in self.columns]:
@@ -723,12 +734,119 @@ class Table:
             filtered_rows = filtered_rows[:limit]
 
         if selected_columns == ["*"]:
-            return filtered_rows
+            projected = filtered_rows
+        else:
+            projected = [
+                [row[column_index[col]] for col in selected_columns]
+                for row in filtered_rows
+            ]
 
-        return [
-            [row[column_index[col]] for col in selected_columns]
-            for row in filtered_rows
+        if distinct:
+            seen   = []
+            result = []
+            for row in projected:
+                if row not in seen:
+                    seen.append(row)
+                    result.append(row)
+            return result
+
+        return projected
+    
+
+
+    def select_aggregate(self, selected_columns: list, conditions: list,
+                        group_by: list, having: list = None):
+        """
+        Execute GROUP BY with aggregate functions COUNT, SUM, AVG, MIN, MAX.
+
+        selected_columns may contain expressions like COUNT(*), SUM(salary).
+        Rows are first filtered by conditions, then grouped by group_by columns,
+        then each group is reduced to one output row by applying aggregates.
+        HAVING filters the grouped result using the same condition dicts as WHERE.
+        """
+        column_index = self._build_column_index()
+
+        filtered = [
+            row for row in self.rows
+            if self._matches_conditions(row, conditions, column_index)
         ]
+
+        # Build groups: key is tuple of group_by values
+        groups = {}
+        for row in filtered:
+            key = tuple(row[column_index[col]] for col in group_by)
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(row)
+
+        result = []
+        for key, group_rows in groups.items():
+            output_row = []
+            for col_expr in selected_columns:
+                upper = col_expr.upper().strip()
+
+                if upper == "COUNT(*)" or upper == "COUNT( * )":
+                    output_row.append(len(group_rows))
+
+                elif upper.startswith("COUNT("):
+                    inner = col_expr[6:].rstrip(")").strip().lower()
+                    idx   = column_index[inner]
+                    output_row.append(sum(1 for r in group_rows if r[idx] is not None))
+
+                elif upper.startswith("SUM("):
+                    inner = col_expr[4:].rstrip(")").strip().lower()
+                    idx   = column_index[inner]
+                    output_row.append(sum(r[idx] for r in group_rows if r[idx] is not None))
+
+                elif upper.startswith("AVG("):
+                    inner  = col_expr[4:].rstrip(")").strip().lower()
+                    idx    = column_index[inner]
+                    vals   = [r[idx] for r in group_rows if r[idx] is not None]
+                    output_row.append(sum(vals) / len(vals) if vals else None)
+
+                elif upper.startswith("MIN("):
+                    inner = col_expr[4:].rstrip(")").strip().lower()
+                    idx   = column_index[inner]
+                    vals  = [r[idx] for r in group_rows if r[idx] is not None]
+                    output_row.append(min(vals) if vals else None)
+
+                elif upper.startswith("MAX("):
+                    inner = col_expr[4:].rstrip(")").strip().lower()
+                    idx   = column_index[inner]
+                    vals  = [r[idx] for r in group_rows if r[idx] is not None]
+                    output_row.append(max(vals) if vals else None)
+
+                else:
+                    col_name = col_expr.strip().lower()
+                    if col_name not in column_index:
+                        raise ValueError(f"Column '{col_name}' does not exist.")
+                    output_row.append(group_rows[0][column_index[col_name]])
+
+            result.append(output_row)
+
+        # HAVING filters on the grouped output rows
+        # Build a temporary column index for the output shape
+        if having:
+            having_index = {col.strip().lower(): i for i, col in enumerate(selected_columns)}
+            result = [
+                row for row in result
+                if self._matches_conditions(row, having, having_index)
+            ]
+
+        return result
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     def delete(self, conditions: list, db=None):
         """

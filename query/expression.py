@@ -19,6 +19,8 @@ class Expression:
         LIKE:     {"type": "like", "column": str, "pattern": str}
         AND/OR:   {"type": "and"/"or", "left": condition, "right": condition}
         NOT:      {"type": "not", "condition": condition}
+        EXISTS:   {"type": "exists", "rows": list}
+        ANY/ALL:  {"type": "any_all", "column": str, "op": str, "qualifier": "ANY"/"ALL", "values": list}
     """
 
     COMPARISON_OPS = {"=", "!=", "<>", ">", "<", ">=", "<="}
@@ -47,6 +49,21 @@ class Expression:
 
         if ctype == "not":
             return not Expression.evaluate(condition["condition"], row, column_index)
+
+        if ctype == "exists":
+            return len(condition["rows"]) > 0
+
+        if ctype == "any_all":
+
+            col_idx    = column_index.get(condition["column"])
+            cell_value = row[col_idx]   
+
+            cell_value = row[col_idx]
+            op         = condition["op"]
+            qualifier  = condition["qualifier"]
+            results    = [Expression._compare(cell_value, op, v) for v in condition["values"]]
+            return any(results) if qualifier == "ANY" else all(results)
+
 
         col     = condition["column"]
         col_idx = column_index.get(col)
@@ -108,6 +125,8 @@ class Expression:
                 return bool(cell_value << value)
             if op == ">>":
                 return bool(cell_value >> value)
+       
+
 
         raise ValueError(f"Unknown condition type: {ctype}")
 
@@ -151,3 +170,14 @@ class Expression:
             else:
                 regex += re.escape(char)
         return regex
+    
+
+    @staticmethod
+    def _compare(left, op: str, right) -> bool:
+        if op in ("=",):   return left == right
+        if op in ("!=", "<>"): return left != right
+        if op == ">":  return left > right
+        if op == "<":  return left < right
+        if op == ">=": return left >= right
+        if op == "<=": return left <= right
+        return False

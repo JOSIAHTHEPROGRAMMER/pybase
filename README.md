@@ -3,25 +3,9 @@
 
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
-
-
-
-
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
-
-
-
-
 ![Tests](https://img.shields.io/badge/Tests-67%20passing-brightgreen?style=flat)
-
-
-
-
 ![GUI](https://img.shields.io/badge/GUI-PyQt6-41CD52?style=flat&logo=qt&logoColor=white)
-
-
-
-
 ![Storage](https://img.shields.io/badge/Storage-Binary%20%2B%20JSON-orange?style=flat)
 
 

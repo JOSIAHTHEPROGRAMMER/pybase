@@ -24,23 +24,55 @@ Full CRUD with `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TAB
 
 **Query System**
 
-Column projection, `SELECT DISTINCT`, column and table aliases, `ORDER BY` with `ASC`/`DESC` on multiple columns, `LIMIT`, `GROUP BY` with `HAVING`, and aggregates (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `COUNT(DISTINCT col)`). Set operations include `UNION`, `UNION ALL`, `INTERSECT`, and `EXCEPT`. Subqueries work in `WHERE` with `IN`, `EXISTS`, `ANY`, and `ALL`. WHERE clauses support comparisons, logical operators, `BETWEEN`, `IN`, `LIKE` with `%` and `_` wildcards, `IS NULL` / `IS NOT NULL`, arithmetic expressions, and bitwise operators. B-Tree indexes are used automatically for single equality conditions on indexed columns.
-
-**Joins**
-
-`INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN`, `FULL OUTER JOIN`, `CROSS JOIN`, and `SELF JOIN` are all supported. All joins use nested loop execution. Table and column aliases work with both `AS` syntax and implicit form (`emp e`). JOIN results support `WHERE`, `ORDER BY`, `LIMIT`, and `DISTINCT`. Column names in join results are prefixed as `table.column` or `alias.column` to avoid ambiguity.
-
-**DDL**
-
-`ALTER TABLE` supports adding, dropping, and renaming columns. `TRUNCATE TABLE` wipes all rows and resets the `AUTO_INCREMENT` counter while keeping the schema intact. `RENAME TABLE` renames both the schema and data files on disk. `CREATE VIEW` and `DROP VIEW` store named SELECT statements that are resolved at query time. `CREATE OR REPLACE VIEW` replaces an existing view in place. Views always reflect live data since the engine substitutes the stored SELECT before execution. `EXPLAIN` returns a human-readable query plan without executing the statement.
+- Column projection — `SELECT name, id FROM ...` or `SELECT *`
+- `SELECT DISTINCT` — removes duplicate rows from the result
+- Column aliases — `SELECT salary AS pay FROM emp`
+- Table aliases — `FROM employees AS e`
+- `ORDER BY` — `ASC` and `DESC` on any column
+- `LIMIT` — cap result set size
+- `GROUP BY` with `HAVING` — group rows and filter groups
+- Aggregate functions — `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
+- Set operations — `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
+- Subqueries — in `WHERE` with `IN`, `EXISTS`, `ANY`, `ALL`
+- B-Tree index used automatically for single equality conditions on indexed columns
+- Rich WHERE clauses:
+  - Comparison: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`
+  - Logical: `AND`, `OR`, `NOT`
+  - Range: `BETWEEN low AND high`
+  - Set: `IN (val1, val2, ...)`
+  - Pattern: `LIKE` with `%` and `_` wildcards
+  - Null: `IS NULL`, `IS NOT NULL`
+  - Arithmetic in WHERE: `salary + 5000 > 100000`
+  - Bitwise: `&`, `|`, `^`, `<<`, `>>`
 
 **Transactions**
 
-`BEGIN`, `COMMIT`, and `ROLLBACK` are all supported. PyBase uses a two-phase commit model that validates every operation before applying any, giving true atomicity. FK constraints are validated at commit time and a failed commit auto-cancels the transaction. `SAVEPOINT`, `ROLLBACK TO SAVEPOINT`, and `RELEASE SAVEPOINT` let you create named restore points inside a transaction. Nested transactions are blocked.
+- `BEGIN`, `COMMIT`, `ROLLBACK`
+- Two-phase commit — validates all operations before applying any (true atomicity)
+- FK constraints validated at commit time
+- Failed commits auto-cancel the transaction — no manual `ROLLBACK` needed
+- `SAVEPOINT name` — create a named restore point inside a transaction
+- `ROLLBACK TO SAVEPOINT name` — undo back to a savepoint without ending the transaction
+- `RELEASE SAVEPOINT name` — discard a savepoint
+- Nested transactions blocked
 
 **Desktop GUI**
 
-SQL editor with syntax highlighting, `Ctrl+Enter` to run, and `Ctrl+/` to toggle line comments. You can highlight a statement and run just that selection. Multi-statement scripts strip comments automatically. Query history is persisted to `data/history.json`. Results show in a table with row numbers and column headers. Chart tab supports bar, line, pie, scatter, and histogram via matplotlib with NULL-safe rendering. Live ER diagram with crow's foot notation and FK relationship lines. Schema browser shows row counts, column types, and constraint tags (PK, FK, UQ, IDX). A green dot in the status bar shows when a transaction is active. `DROP TABLE` and `DROP DATABASE` both prompt for confirmation. Error and status messages are selectable and copyable. Dark Neon theme with `#0f0f0f` background and `#00e599` accent.
+- SQL editor with syntax highlighting and `Ctrl+Enter` to run
+- `Ctrl+/` to toggle line comments on selected lines
+- Run selected text only — highlight a statement and run just that
+- Multi-statement execution with comment stripping
+- Query history dropdown — persisted to `data/history.json`
+- Results table with row numbers and column headers
+- Bar, line, pie, scatter, and histogram chart tab via matplotlib
+- Live ER diagram tab with crow's foot notation and FK relationship lines
+- Schema browser with table row counts, column types, and constraint tags (PK, FK, UQ, IDX)
+- Transaction status indicator — green dot when a transaction is active
+- `DROP TABLE` and `DROP DATABASE` confirmation dialogs
+- Error and status messages are selectable and copyable
+- Dark Neon theme — `#0f0f0f` background, `#00e599` accent
+
+---
 
 ## Architecture
 
@@ -65,10 +97,7 @@ pybase/
 │       ├── history.py      # Query history dropdown with persistence
 │       └── status_bar.py   # Transaction status indicator
 ├── query/
-│   ├── expression.py       # Full expression evaluator for WHERE, subqueries, arithmetic, bitwise
-│   ├── planner.py          # Query plan builder for JOIN statements
-│   ├── executor.py         # Nested loop join executor for all join types
-│   └── utils.py            # Shared helpers used by engine and parser
+│   └── expression.py       # Full expression evaluator — comparisons, logical, arithmetic, bitwise, subqueries
 ├── storage/
 │   ├── btree.py            # B-Tree and BTreeNode data structures
 │   ├── index_manager.py    # Owns and manages B-Tree indexes per table
@@ -80,50 +109,51 @@ pybase/
 └── cli.py                  # SQL parser, dispatcher, and REPL entry point
 ```
 
-### Layer Responsibilities
+**Layer Responsibilities**
 
-| Layer                       | Responsibility                                                         |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `cli.py`                    | Parse SQL strings, dispatch to database, print results                 |
-| `core/database.py`          | Own all tables and views, manage transactions, reload state on startup |
-| `core/table.py`             | Validate and execute all row operations, enforce constraints, DDL      |
-| `core/transaction.py`       | Two-phase atomic commit, buffer operations, savepoints                 |
-| `query/expression.py`       | Evaluate WHERE expressions including subquery types                    |
-| `query/planner.py`          | Build query plan dicts from parsed JOIN statements                     |
-| `query/executor.py`         | Execute join plans using nested loop strategy                          |
-| `query/utils.py`            | Shared helpers used by both engine and parser                          |
-| `storage/pager.py`          | Append rows to disk, rewrite file after delete/update                  |
-| `storage/serializer.py`     | Convert rows to fixed-width binary with NULL flag bytes                |
-| `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                          |
-| `storage/btree.py`          | Sorted key-value tree with O(log n) search                             |
-| `storage/index_manager.py`  | Create, rebuild, and query B-Tree indexes                              |
-| `gui/`                      | PyQt6 desktop interface: editor, results, charts, ER diagram           |
+| Layer                       | Responsibility                                                |
+| --------------------------- | ------------------------------------------------------------- |
+| `cli.py`                    | Parse SQL strings, dispatch to database, print results        |
+| `core/database.py`          | Own all tables, manage transactions, reload tables on startup |
+| `core/table.py`             | Validate and execute all row operations, enforce constraints  |
+| `core/transaction.py`       | Two-phase atomic commit, buffer operations, savepoints        |
+| `query/expression.py`       | Evaluate WHERE expressions including subquery types           |
+| `storage/pager.py`          | Append rows to disk, rewrite file after delete/update         |
+| `storage/serializer.py`     | Convert rows to fixed-width binary and back                   |
+| `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                 |
+| `storage/btree.py`          | Sorted key-value tree with O(log n) search                    |
+| `storage/index_manager.py`  | Create, rebuild, and query B-Tree indexes                     |
+| `gui/`                      | PyQt6 desktop interface — editor, results, charts, ER diagram |
+
+---
 
 ## Getting Started
 
 ### Requirements
 
-Python 3.10+, PyQt6, matplotlib.
+- Python 3.10+
+- PyQt6 (GUI only)
+- matplotlib (charts and ER diagram)
 
 ```bash
 pip install PyQt6 matplotlib
 ```
 
-### Run CLI
+Run the CLI:
 
 ```bash
 cd pybase
 python cli.py
 ```
 
-### Run GUI
+Run the GUI:
 
 ```bash
 cd pybase
 python -m gui.main
 ```
 
-### Run Tests
+Run the tests:
 
 ```bash
 cd pybase
@@ -132,7 +162,7 @@ pytest tests/phase_1_test.py -v -s
 
 ## Supported SQL Syntax
 
-### DDL
+**DDL**
 
 ```sql
 CREATE TABLE users (id int PRIMARY KEY, name string);
@@ -163,7 +193,7 @@ DROP TABLE users;
 CREATE INDEX ON users (id);
 ```
 
-### DML
+**DML**
 
 ```sql
 INSERT INTO users VALUES (1, 'Alice');
@@ -204,7 +234,7 @@ UPDATE employees SET salary = 95000 WHERE id = 1;
 DELETE FROM employees WHERE id = 1;
 ```
 
-### Transactions and Savepoints
+**Transactions and Savepoints**
 
 ```sql
 BEGIN;
@@ -235,7 +265,7 @@ COMMIT;
 | `boolean` | `bool`            | 1 byte                  |
 | `string`  | `str`             | 256 bytes fixed width   |
 
-NULL values are stored with a 1-byte null flag per column so any column of any type can hold NULL.
+---
 
 ## Constraints
 
@@ -253,17 +283,37 @@ NULL values are stored with a 1-byte null flag per column so any column of any t
 | `ON UPDATE CASCADE`     | Child FK values updated automatically when parent PK changes                 |
 | Duplicate rows          | Exact duplicate rows always rejected                                         |
 
+---
+
 ## Persistence
 
-Each table produces two files in the `data/` directory. The `.db` file holds fixed-width binary row data with a 1-byte null flag per column. The `.schema` file holds JSON with columns, types, constraints, indexes, foreign keys, and the auto increment counter. Views are persisted to `data/views.json`. On startup the database scans `data/` for `.schema` files, reloads all tables, rebuilds B-Tree indexes, restores all constraint definitions, and reloads all views.
+Each table produces two files in the `data/` directory:
+
+| File                | Contents                                                                          |
+| ------------------- | --------------------------------------------------------------------------------- |
+| `table_name.db`     | Fixed-width binary row data                                                       |
+| `table_name.schema` | JSON — columns, types, constraints, indexes, foreign keys, auto increment counter |
+
+On startup the database scans `data/` for `.schema` files and reloads all tables automatically, rebuilding B-Tree indexes and restoring all constraint definitions.
+
+---
 
 ## Transactions
 
-PyBase uses a two-phase atomic commit model. `BEGIN` starts buffering `INSERT`, `UPDATE`, and `DELETE` operations. `COMMIT` runs Phase 1 (validate all operations) then Phase 2 (apply all operations). If Phase 1 finds any violation, nothing is applied and the transaction is auto-cancelled. `ROLLBACK` discards the buffer and nothing is written. `SAVEPOINT name` creates a named restore point inside the active transaction. `ROLLBACK TO SAVEPOINT name` undoes back to that point without ending the transaction. `RELEASE SAVEPOINT name` discards a savepoint. `SELECT` always reads live committed data even inside a transaction. `DROP TABLE` and `DROP DATABASE` are blocked inside a transaction. Nested transactions are not supported.
+PyBase uses a two-phase atomic commit model:
 
-## Views
+- `BEGIN` starts buffering `INSERT`, `UPDATE`, and `DELETE` operations
+- `COMMIT` runs Phase 1 (validate all operations) then Phase 2 (apply all operations)
+- If Phase 1 finds any violation, nothing is applied and the transaction is auto-cancelled
+- `ROLLBACK` discards the buffer — nothing is written
+- `SAVEPOINT name` creates a named restore point inside the active transaction
+- `ROLLBACK TO SAVEPOINT name` undoes back to that point without ending the transaction
+- `RELEASE SAVEPOINT name` discards a savepoint once it is no longer needed
+- `SELECT` always reads live committed data, even inside a transaction
+- `DROP TABLE` and `DROP DATABASE` are blocked inside a transaction
+- Nested transactions are not supported
 
-Views store a SELECT statement by name and resolve it at query time. They always reflect live data since the engine substitutes the stored SELECT before execution. Views survive restarts via `data/views.json`. `SELECT * FROM view_name` works transparently. Views support WHERE, GROUP BY, ORDER BY, aggregates, and joins in their definition.
+---
 
 ## GUI
 

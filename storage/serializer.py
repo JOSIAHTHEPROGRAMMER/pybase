@@ -18,7 +18,28 @@ class Serializer:
         """
         result = b""
 
+
+
         for value, (_, column_type) in zip(row, columns):
+
+            if value is None:
+                # null flag + zero bytes for this column width
+                if column_type == "int":
+                    result += b"\x00" + b"\x00" * 4
+                elif column_type == "bigint":
+                    result += b"\x00" + b"\x00" * 8
+                elif column_type == "float":
+                    result += b"\x00" + b"\x00" * 8
+                elif column_type == "boolean":
+                    result += b"\x00" + b"\x00" * 1
+                elif column_type == "string":
+                    result += b"\x00" + b"\x00" * (1 + Serializer.STRING_SIZE)
+                continue
+
+            result += b"\x01"  # not null flag
+
+
+
             if column_type == "int":
                 result += value.to_bytes(4, byteorder="big", signed=True)
 
@@ -61,6 +82,22 @@ class Serializer:
         offset = 0
 
         for _, column_type in columns:
+            null_flag = data[offset]
+            offset += 1
+
+            if null_flag == 0:
+                # skip the column bytes and append None
+                if column_type == "int":      offset += 4
+                elif column_type == "bigint": offset += 8
+                elif column_type == "float":  offset += 8
+                elif column_type == "boolean": offset += 1
+                elif column_type == "string": offset += 1 + Serializer.STRING_SIZE
+                row.append(None)
+                continue           
+
+
+
+
             if column_type == "int":
                 value = int.from_bytes(
                     data[offset:offset + 4],

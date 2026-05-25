@@ -2,14 +2,16 @@ import os
 from core.table import Table
 from storage.schema_manager import SchemaManager
 from core.transaction import Transaction
-
+import json
 
 class Database:
     def __init__(self, folder: str = "data"):
         self.folder = folder
         self.tables = {}
-        self.current_transaction = None  # None means no active transaction
+        self.views  = {}
+        self.current_transaction = None
         self._reload_existing_tables()
+        self._reload_existing_views()
 
     def _reload_existing_tables(self):
         """
@@ -30,6 +32,21 @@ class Database:
                 # Pass folder so Table writes files to the correct location
                 table = Table(table_name, columns, unique_columns=None, folder=self.folder)
                 self.tables[table_name] = table
+
+    def _reload_existing_views(self):
+        # load views.json from disk if it exists
+        views_path = os.path.join(self.folder, "views.json")
+        if os.path.exists(views_path):
+            
+            with open(views_path, "r") as f:
+                self.views = json.load(f)
+
+
+    def _persist_views(self):
+
+        views_path = os.path.join(self.folder, "views.json")
+        with open(views_path, "w") as f:
+            json.dump(self.views, f, indent=2)
 
     def create_table(self, name: str, columns: list[tuple[str, str]]):
         if name in self.tables:
@@ -91,6 +108,37 @@ class Database:
         history_path = os.path.join(self.folder, "history.json")
         if os.path.exists(history_path):
             os.remove(history_path)
+
+
+
+    def create_view(self, name: str, select_sql: str, replace: bool = False):
+        if name in self.tables:
+            raise ValueError(f"A table named '{name}' already exists.")
+        if name in self.views and not replace:
+            raise ValueError(f"View '{name}' already exists. Use CREATE OR REPLACE VIEW.")
+        self.views[name] = select_sql
+        self._persist_views()
+
+    def drop_view(self, name: str):
+        if name not in self.views:
+            raise ValueError(f"View '{name}' does not exist.")
+        del self.views[name]
+        self._persist_views()
+
+    def get_view(self, name: str) -> str:
+        if name not in self.views:
+            raise ValueError(f"View '{name}' does not exist.")
+        return self.views[name]
+
+    def rename_table(self, old_name: str, new_name: str):
+        if old_name not in self.tables:
+            raise ValueError(f"Table '{old_name}' does not exist.")
+        if new_name in self.tables:
+            raise ValueError(f"Table '{new_name}' already exists.")
+        table = self.tables[old_name]
+        table.rename(new_name)
+        self.tables[new_name] = table
+        del self.tables[old_name]
 
     def begin_transaction(self):
         """

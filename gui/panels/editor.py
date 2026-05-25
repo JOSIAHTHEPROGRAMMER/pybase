@@ -7,12 +7,17 @@ from PyQt6.QtCore import Qt
 from gui.widgets.font import get_mono_font
 
 from cli import (
-    parse_create_table, parse_insert, parse_select,
+     parse_alter_table, parse_truncate, parse_rename_table, parse_create_view, parse_drop_view, parse_explain,
+     parse_create_table, parse_insert, parse_select,
     parse_delete, parse_update, parse_create_index,
     parse_drop_table, _detect_set_operator, resolve_subqueries
 )
 from gui.widgets.highlighter import SQLHighlighter
 from gui.widgets.history import QueryHistoryBar
+from query.planner import QueryPlanner
+from query.executor import QueryExecutor
+from query.utils import _has_aggregate
+
 
 BACKGROUND   = "#0f0f0f"
 PANEL        = "#1a1a1a"
@@ -376,6 +381,58 @@ class EditorPanel(QWidget):
                 self.on_schema_change()
                 self.on_result([], [], f"Table '{table_name}' created successfully.")
 
+            elif cmd_upper.startswith("EXPLAIN"):
+                inner_sql = parse_explain(command)
+                (table_name, selected_columns, conditions, order_by,
+                limit, distinct, group_by, having, join, alias_map) = parse_select(inner_sql)
+                table = self.db.get_table(table_name)
+                result = table.explain(selected_columns, conditions, order_by, group_by, join, alias_map)
+                self.on_result([], [], result)
+
+            elif cmd_upper.startswith("ALTER TABLE"):
+                action, table_name, col_a, col_b, extra = parse_alter_table(command)
+                table = self.db.get_table(table_name)
+                if action == "add":
+                    table.alter_add_column(col_a, col_b, default=extra)
+                    self.on_schema_change()
+                    self.on_result([], [], f"Column '{col_a}' added to '{table_name}'.")
+                elif action == "drop":
+                    table.alter_drop_column(col_a)
+                    self.on_schema_change()
+                    self.on_result([], [], f"Column '{col_a}' dropped from '{table_name}'.")
+                elif action == "rename":
+                    table.alter_rename_column(col_a, col_b)
+                    self.on_schema_change()
+                    self.on_result([], [], f"Column '{col_a}' renamed to '{col_b}' in '{table_name}'.")
+
+            elif cmd_upper.startswith("TRUNCATE"):
+                table_name = parse_truncate(command)
+                self.db.get_table(table_name).truncate()
+                self.on_schema_change()
+                self.on_result([], [], f"Table '{table_name}' truncated.")
+
+            elif cmd_upper.startswith("RENAME TABLE"):
+                old_name, new_name = parse_rename_table(command)
+                self.db.rename_table(old_name, new_name)
+                self.on_schema_change()
+                self.on_result([], [], f"Table '{old_name}' renamed to '{new_name}'.")
+
+            elif cmd_upper.startswith("CREATE VIEW") or cmd_upper.startswith("CREATE OR REPLACE VIEW"):
+
+                view_name, select_sql, replace = parse_create_view(command)
+                self.db.create_view(view_name, select_sql, replace)
+                self.on_schema_change()
+                self.on_result([], [], f"View '{view_name}' created.")
+
+            elif cmd_upper.startswith("DROP VIEW"):
+                view_name = parse_drop_view(command)
+                self.db.drop_view(view_name)
+                self.on_schema_change()
+                self.on_result([], [], f"View '{view_name}' dropped.")
+
+
+
+
             elif cmd_upper.startswith("DROP DATABASE"):
                 if self.db.in_transaction():
                     raise ValueError(
@@ -479,10 +536,10 @@ class EditorPanel(QWidget):
                     rows, col_names = self._execute_set_operation(set_op)
                 else:
                     (table_name, selected_columns, conditions,
-                    order_by, limit, distinct, group_by, having) = parse_select(command)
+                    order_by, limit, distinct, group_by, having, join, alias_map) = parse_select(command)
                     rows, col_names = self._execute_select(
                         table_name, selected_columns, conditions,
-                        order_by, limit, distinct, group_by, having
+                        order_by, limit, distinct, group_by, having, join, alias_map
                     )
                 self.on_result(col_names, rows, f"{len(rows)} row(s) returned.")
 
@@ -519,21 +576,42 @@ class EditorPanel(QWidget):
         except Exception as e:
             self.on_result([], [], f"Error in '{command[:40]}...': {e}")
             return False
+        
+
 
 
     def _execute_select(self, table_name, selected_columns, conditions,
-                        order_by, limit, distinct, group_by, having):
+                        order_by, limit, distinct, group_by, having, join=None, alias_map=None):
         """
         Resolve subqueries in conditions, then run select_aggregate or
         select_advanced depending on whether GROUP BY is present.
         Returns (rows, col_names).
         """
+
+        alias_map = alias_map or {}
+
+        # resolve view to its underlying SELECT if the name is a view
+        print(f"_execute_select called with table_name={table_name}")
+        if table_name in self.db.views:
+            print(f"resolving view: {self.db.views[table_name]}")
+            view_sql = self.db.views[table_name]
+            (table_name, selected_columns, conditions, order_by,
+            limit, distinct, group_by, having, join, alias_map) = parse_select(view_sql)
+
+
         table = self.db.get_table(table_name)
 
         # Resolve subqueries inside conditions before evaluation
         resolve_subqueries(conditions, self.db)
+
+
+        if join:
+
+            plan = QueryPlanner.build(join, selected_columns, conditions, order_by, limit, distinct)
+            rows, col_names, _ = QueryExecutor(self.db).execute(plan)
+            return rows, col_names
         
-        if group_by:
+        if group_by or _has_aggregate(selected_columns):
             rows = table.select_aggregate(selected_columns, conditions, group_by, having)
         else:
             rows = table.select_advanced(
@@ -543,7 +621,7 @@ class EditorPanel(QWidget):
         if selected_columns == ["*"]:
             col_names = [col[0] for col in table.columns]
         else:
-            col_names = selected_columns
+            col_names = [alias_map.get(col, col) for col in selected_columns]
 
         return rows, col_names
 
@@ -557,12 +635,12 @@ class EditorPanel(QWidget):
         """
         operator, left_sql, right_sql = set_op
 
-        (lt, lc, lcond, lo, ll, ld, lg, lh) = parse_select(left_sql)
-        (rt, rc, rcond, ro, rl, rd, rg, rh) = parse_select(right_sql)
+        (lt, lc, lcond, lo, ll, ld, lg, lh, lj, lam) = parse_select(left_sql)
+        (rt, rc, rcond, ro, rl, rd, rg, rh, rj, ram) = parse_select(right_sql)
 
-        left_rows,  col_names = self._execute_select(lt, lc, lcond, lo, ll, ld, lg, lh)
-        right_rows, _         = self._execute_select(rt, rc, rcond, ro, rl, rd, rg, rh)
-
+        left_rows,  col_names = self._execute_select(lt, lc, lcond, lo, ll, ld, lg, lh, lj, lam)
+        right_rows, _         = self._execute_select(rt, rc, rcond, ro, rl, rd, rg, rh, rj, ram)
+      
         if operator == "UNION ALL":
             result = left_rows + right_rows
 

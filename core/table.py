@@ -2,6 +2,8 @@ from storage.pager import Pager
 from storage.schema_manager import SchemaManager
 from storage.index_manager import IndexManager
 from query.expression import Expression
+from query.utils import _has_aggregate
+import os
 
 
 class Table:
@@ -547,6 +549,189 @@ class Table:
 
         return f"Index created on '{column_name}'."
 
+
+
+    def alter_add_column(self, column_name: str, column_type: str, default=None):
+        # reject if column already exists
+        if column_name in [col[0] for col in self.columns]:
+            raise ValueError(f"Column '{column_name}' already exists.")
+
+        if column_type not in self.SUPPORTED_TYPES:
+            raise ValueError(f"Unsupported type '{column_type}'.")
+
+        self.columns.append((column_name, column_type))
+
+        if default is not None:
+            self.default_values[column_name] = default
+
+        # rewrite all rows with the new column appended, using default or None
+        new_rows = [list(row) + [default] for row in self.rows]
+        self.rows = new_rows
+        self.pager.columns = self.columns
+        self.pager.row_size = self.pager._calculate_row_size()
+        self.pager.rewrite_all_rows(self.rows)
+        self._persist_schema()
+
+
+
+
+    def alter_drop_column(self, column_name: str):
+        col_names = [col[0] for col in self.columns]
+        if column_name not in col_names:
+            raise ValueError(f"Column '{column_name}' does not exist.")
+
+        if column_name == self.primary_key:
+            raise ValueError("Cannot drop the PRIMARY KEY column.")
+
+        if column_name in self.composite_primary_key:
+            raise ValueError("Cannot drop a column that is part of a composite PRIMARY KEY.")
+
+        drop_idx = col_names.index(column_name)
+
+        # remove column from schema
+        self.columns = [col for col in self.columns if col[0] != column_name]
+        self.unique_columns.discard(column_name)
+        self.not_null_columns.discard(column_name)
+        self.default_values.pop(column_name, None)
+        self.check_constraints = [cc for cc in self.check_constraints if cc["column"] != column_name]
+        self.foreign_keys = [fk for fk in self.foreign_keys if fk["column"] != column_name]
+
+        # rewrite rows without the dropped column
+        new_rows = [list(row[:drop_idx]) + list(row[drop_idx + 1:]) for row in self.rows]
+        self.rows = new_rows
+        self.pager.columns = self.columns
+        self.pager.row_size = self.pager._calculate_row_size()
+        self.pager.rewrite_all_rows(self.rows)
+        self._persist_schema()
+
+
+
+    def alter_rename_column(self, old_name: str, new_name: str):
+        col_names = [col[0] for col in self.columns]
+        if old_name not in col_names:
+            raise ValueError(f"Column '{old_name}' does not exist.")
+        if new_name in col_names:
+            raise ValueError(f"Column '{new_name}' already exists.")
+
+        # update columns list
+        self.columns = [
+            (new_name, ctype) if cname == old_name else (cname, ctype)
+            for cname, ctype in self.columns
+        ]
+
+        # update all constraint references
+        if self.primary_key == old_name:
+            self.primary_key = new_name
+        self.unique_columns = {new_name if c == old_name else c for c in self.unique_columns}
+        self.not_null_columns = {new_name if c == old_name else c for c in self.not_null_columns}
+        self.composite_primary_key = [new_name if c == old_name else c for c in self.composite_primary_key]
+        self.composite_unique = [[new_name if c == old_name else c for c in group] for group in self.composite_unique]
+
+        if old_name in self.default_values:
+            self.default_values[new_name] = self.default_values.pop(old_name)
+
+        self.check_constraints = [
+            {**cc, "column": new_name} if cc["column"] == old_name else cc
+            for cc in self.check_constraints
+        ]
+        self.foreign_keys = [
+            {**fk, "column": new_name} if fk["column"] == old_name else fk
+            for fk in self.foreign_keys
+        ]
+
+        # no row rewrite needed, data is unchanged
+        self._persist_schema()
+
+
+    def truncate(self):
+        # wipe all rows from memory and disk, keep schema intact
+        self.rows = []
+        self.pager.rewrite_all_rows([])
+
+        # reset auto increment counter
+        if self.auto_increment is not None:
+            self.auto_increment["next_value"] = 1
+            self._persist_schema()
+
+        # rebuild indexes as empty
+        column_index = self._build_column_index()
+        for col in self.index_manager.indexes:
+            self.index_manager.rebuild(col, self.rows, column_index[col])
+
+
+
+
+    def rename(self, new_name: str):
+        
+        old_db_path     = self.pager.file_path
+        old_schema_path = self.schema_manager.schema_path
+
+        new_db_path     = os.path.join(self.folder, f"{new_name}.db")
+        new_schema_path = os.path.join(self.folder, f"{new_name}.schema")
+
+        os.rename(old_db_path, new_db_path)
+        os.rename(old_schema_path, new_schema_path)
+
+        # update in-memory references
+        self.name = new_name
+        self.pager.table_name = new_name
+        self.pager.file_path  = new_db_path
+        self.schema_manager.table_name  = new_name
+        self.schema_manager.schema_path = new_schema_path
+
+
+
+
+    def explain(self, selected_columns, conditions, order_by, group_by, join, alias_map):
+        lines = []
+
+        if join:
+            lines.append(f"JOIN {join['join_type']} between '{join['left_table']}' and '{join['right_table']}'")
+            lines.append(f"ON {join['on_left']} = {join['on_right']}")
+            lines.append("Strategy: nested loop join")
+        else:
+            lines.append(f"Table: '{self.name}'")
+
+
+            if (
+                len(conditions) == 1
+                and conditions[0].get("type") == "simple"
+                and conditions[0].get("op") == "="
+                and self.index_manager.has_index(conditions[0].get("column", "").split(".")[-1])
+            ):
+                lines.append(f"Index scan on '{conditions[0]['column']}'")
+            elif conditions:
+                lines.append("Full table scan with WHERE filter")
+            else:
+                lines.append("Full table scan")
+
+        if group_by:
+            lines.append(f"GROUP BY: {', '.join(group_by)}")
+
+        
+        if _has_aggregate(selected_columns):
+            aggs = [col for col in selected_columns if "(" in col]
+            lines.append(f"Aggregates: {', '.join(aggs)}")
+
+        if order_by:
+            order_str = ", ".join(f"{col} {dir}" for col, dir in order_by)
+            lines.append(f"ORDER BY: {order_str}")
+
+        if selected_columns != ["*"]:
+            lines.append(f"Projection: {', '.join(selected_columns)}")
+        else:
+            lines.append("Projection: all columns")
+
+        return "\n".join(lines)
+
+
+
+
+
+
+
+
+
     def insert(self, row: list, db=None):
         """
         Validate and insert a new row into the table.
@@ -655,6 +840,8 @@ class Table:
         )
 
         return [row for row in self.rows if row[column_index] == value]
+    
+
 
     def select_advanced(self, selected_columns: list, conditions: list,
                         order_by: tuple = None, limit: int = None, distinct: bool = False):
@@ -677,30 +864,39 @@ class Table:
 
         if selected_columns != ["*"]:
             for col in selected_columns:
-                if "(" not in col and col not in [c[0] for c in self.columns]:
+                bare = col.split(".")[-1]
+
+                if "(" not in col and bare not in [c[0] for c in self.columns]:
                     raise ValueError(f"Column '{col}' does not exist.")
 
 
         if selected_columns != ["*"]:
             for col in selected_columns:
-                if col not in [c[0] for c in self.columns]:
+                bare = col.split(".")[-1]
+
+                if bare not in [c[0] for c in self.columns]:
                     raise ValueError(f"Column '{col}' does not exist.")
 
         column_index = self._build_column_index()
 
         for condition in conditions:
             if condition.get("type") == "simple":
-                if condition["column"] not in column_index:
+                cond_col = condition["column"].split(".")[-1]
+
+                if cond_col not in column_index:
                     raise ValueError(
                         f"Column '{condition['column']}' does not exist."
                     )
 
-        if order_by is not None:
-            order_col, order_dir = order_by
-            if order_col not in column_index:
-                raise ValueError(f"Column '{order_col}' does not exist.")
-            if order_dir.upper() not in ("ASC", "DESC"):
-                raise ValueError("ORDER BY direction must be ASC or DESC.")
+        if order_by:
+            for order_col, order_dir in order_by:
+                order_col = order_col.split(".")[-1]
+
+                if order_col not in column_index:
+                    raise ValueError(f"Column '{order_col}' does not exist.")
+
+                if order_dir not in ("ASC", "DESC"):
+                    raise ValueError("ORDER BY direction must be ASC or DESC.")
 
         if limit is not None and (not isinstance(limit, int) or limit < 1):
             raise ValueError("LIMIT must be a positive integer.")
@@ -709,9 +905,11 @@ class Table:
             len(conditions) == 1
             and conditions[0].get("type") == "simple"
             and conditions[0].get("op") == "="
-            and self.index_manager.has_index(conditions[0].get("column"))
+            and self.index_manager.has_index(
+                conditions[0].get("column").split(".")[-1]
+            )
         ):
-            col           = conditions[0]["column"]
+            col           = conditions[0]["column"].split(".")[-1]
             val           = conditions[0]["value"]
             filtered_rows = self.index_manager.search(col, val) or []
         else:
@@ -720,15 +918,17 @@ class Table:
                 if self._matches_conditions(row, conditions, column_index)
             ]
 
-        if order_by is not None:
-            order_col, order_dir = order_by
-            col_idx = column_index[order_col]
-            reverse = order_dir.upper() == "DESC"
-            filtered_rows = sorted(
-                filtered_rows,
-                key=lambda row: row[col_idx],
-                reverse=reverse
-            )
+        if order_by:
+            filtered_rows = list(filtered_rows)
+
+            for col, direction in reversed(order_by):
+                col = col.split(".")[-1]
+                col_idx = column_index[col]
+
+                filtered_rows.sort(
+                    key=lambda row: (row[col_idx] is None, row[col_idx]),
+                    reverse=(direction == "DESC")
+                )
 
         if limit is not None:
             filtered_rows = filtered_rows[:limit]
@@ -737,7 +937,7 @@ class Table:
             projected = filtered_rows
         else:
             projected = [
-                [row[column_index[col]] for col in selected_columns]
+                [row[column_index[col.split(".")[-1]]] for col in selected_columns]
                 for row in filtered_rows
             ]
 
@@ -751,7 +951,7 @@ class Table:
             return result
 
         return projected
-    
+
 
 
     def select_aggregate(self, selected_columns: list, conditions: list,
@@ -787,6 +987,12 @@ class Table:
 
                 if upper == "COUNT(*)" or upper == "COUNT( * )":
                     output_row.append(len(group_rows))
+
+                elif upper.startswith("COUNT(DISTINCT "):
+                    inner = col_expr[15:].rstrip(")").strip().lower()
+                    idx   = column_index[inner]
+                    vals  = [r[idx] for r in group_rows if r[idx] is not None]
+                    output_row.append(len(set(vals)))
 
                 elif upper.startswith("COUNT("):
                     inner = col_expr[6:].rstrip(")").strip().lower()
@@ -841,13 +1047,6 @@ class Table:
 
 
 
-
-
-
-
-
-
-
     def delete(self, conditions: list, db=None):
         """
         Delete all rows matching ALL conditions.
@@ -868,7 +1067,9 @@ class Table:
 
         for condition in conditions:
             if condition.get("type") == "simple":
-                if condition["column"] not in column_index:
+                cond_col = condition["column"].split(".")[-1]
+
+                if cond_col not in column_index:
                     raise ValueError(
                         f"Column '{condition['column']}' does not exist."
                     )

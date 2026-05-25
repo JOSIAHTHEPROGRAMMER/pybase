@@ -100,7 +100,7 @@ class ResultsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.table = QTableWidget()
-        self.table.setFont(QFont("JetBrains Mono, Cascadia Code, Courier New", 11))
+        self.table.setFont(get_mono_font(11))
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)

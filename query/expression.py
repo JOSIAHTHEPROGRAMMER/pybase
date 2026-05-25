@@ -69,6 +69,9 @@ class Expression:
         col_idx = column_index.get(col)
 
         if col_idx is None:
+            col_idx = column_index.get(col.split(".")[-1])
+
+        if col_idx is None:
             raise ValueError(f"Column '{col}' does not exist.")
 
         cell_value = row[col_idx]

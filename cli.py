@@ -1,6 +1,7 @@
 from core.database import Database
-
-
+from query.planner import QueryPlanner
+from query.executor import QueryExecutor
+from query.utils import _has_aggregate
 db = Database()
 
 
@@ -479,6 +480,95 @@ def _detect_set_operator(command: str):
                 depth = 0
             return None
 
+
+
+def _parse_join(command: str) -> dict | None:
+    upper = command.upper()
+    join_types = ["FULL OUTER JOIN", "INNER JOIN", "LEFT JOIN", "RIGHT JOIN", "CROSS JOIN"]
+    
+    for jt in join_types:
+        if jt in upper:
+            idx        = upper.index(jt)
+            left_part  = command[:idx].strip()
+
+            left_upper = left_part.upper()
+            if "FROM" in left_upper:
+                from_idx  = left_upper.rindex("FROM")
+                left_part = left_part[from_idx + 4:].strip()
+
+            rest       = command[idx + len(jt):].strip()
+            join_type  = jt.replace(" JOIN", "").replace(" OUTER", "").strip()
+
+            # split right table and ON clause
+            if " ON " in rest.upper():
+                on_idx       = rest.upper().index(" ON ")
+                right_part   = rest[:on_idx].strip()
+                on_clause    = rest[on_idx + 4:].strip()
+
+
+                tail = ""
+                for keyword in ("WHERE", "ORDER BY", "GROUP BY", "LIMIT", "HAVING"):
+                    kw_idx = on_clause.upper().find(keyword)
+                    if kw_idx != -1:
+                        tail      = on_clause[kw_idx:]
+                        on_clause = on_clause[:kw_idx].strip()
+                        break
+
+
+                left_alias   = None
+                right_alias  = None
+
+                # parse table aliases
+                if " AS " in left_part.upper():
+                    ai = left_part.upper().index(" AS ")
+                    left_alias = left_part[ai + 4:].strip().lower()
+                    left_part  = left_part[:ai].strip()
+                elif " " in left_part.strip():
+                    parts      = left_part.strip().split()
+                    left_alias = parts[-1].lower()
+                    left_part  = parts[0]
+
+                if " AS " in right_part.upper():
+                    ai = right_part.upper().index(" AS ")
+                    right_alias = right_part[ai + 4:].strip().lower()
+                    right_part  = right_part[:ai].strip()
+                elif " " in right_part.strip():
+                    parts       = right_part.strip().split()
+                    right_alias = parts[-1].lower()
+                    right_part  = parts[0]
+
+                # parse ON left_col = right_col
+                eq_idx    = on_clause.index("=")
+                on_left   = on_clause[:eq_idx].strip().lower()
+                on_right  = on_clause[eq_idx + 1:].strip().lower()
+
+                return {
+                    "join_type":   join_type,
+                    "left_table":  left_part.strip().lower(),
+                    "right_table": right_part.strip().lower(),
+                    "left_alias":  left_alias,
+                    "right_alias": right_alias,
+                    "on_left":     on_left,
+                    "on_right":    on_right,
+                    "tail":        tail,
+                }
+            elif jt == "CROSS JOIN":
+                return {
+                    "join_type":   "CROSS",
+                    "left_table":  left_part.strip().lower(),
+                    "right_table": rest.strip().lower(),
+                    "left_alias":  None,
+                    "right_alias": None,
+                    "on_left":     None,
+                    "on_right":    None,
+
+                }
+    return None
+
+
+
+
+
 def parse_select(command: str):
     """
     Parse a SELECT command and return table name, columns, conditions,
@@ -487,10 +577,18 @@ def parse_select(command: str):
     Clause extraction order: LIMIT first, then ORDER BY, then WHERE.
     """
     command = command.strip().rstrip(";")
+    join = _parse_join(command)
 
+    if join:
+         table_name = join["left_table"]
+         rest = join.get("tail", "")
+
+    alias_map = {}
     from_idx     = command.upper().index("FROM")
     select_part  = command[:from_idx]
-    rest         = command[from_idx + 4:]
+
+    if not join:
+     rest = command[from_idx + 4:]
 
     raw_cols = select_part[select_part.upper().index("SELECT") + 6:].strip()
 
@@ -505,7 +603,7 @@ def parse_select(command: str):
         selected_columns = ["*"]
     else:
         selected_columns = []
-        alias_map = {}
+       
         for col in raw_cols.split(","):
             col = col.strip()
             upper = col.upper()
@@ -528,17 +626,23 @@ def parse_select(command: str):
         rest      = rest[:limit_idx].strip()
         limit     = int(limit_val)
 
-    order_by = None
+    order_by = []
     if "ORDER BY" in rest.upper():
         order_idx    = rest.upper().index("ORDER BY")
         order_clause = rest[order_idx + 8:].strip()
         rest         = rest[:order_idx].strip()
 
-        order_parts = order_clause.split()
-        if order_parts:
-            order_col = order_parts[0].lower()
-            order_dir = order_parts[1].upper() if len(order_parts) > 1 else "ASC"
-            order_by  = (order_col, order_dir)
+        for part in order_clause.split(","):
+            parts     = part.strip().split()
+            col       = parts[0].lower()
+            direction = parts[1].upper() if len(parts) > 1 else "ASC"
+
+            for real, alias in alias_map.items():
+                if col == alias:
+                    col = real
+                    break
+
+            order_by.append((col, direction))
 
     group_by = []
     having   = []
@@ -556,45 +660,20 @@ def parse_select(command: str):
     conditions = []
     if "WHERE" in rest.upper():
         where_idx  = rest.upper().index("WHERE")
-        table_name = rest[:where_idx].strip()
         where_part = rest[where_idx + 5:]
         conditions = parse_conditions(where_part)
+        if not join:
+            table_name = rest[:where_idx].strip()
     else:
-        table_name = rest.strip()
+        if not join:
+            table_name = rest.strip()
 
-    if " AS " in table_name.upper():
+    if not join and " AS " in table_name.upper():
         idx = table_name.upper().index(" AS ")
         table_name = table_name[:idx].strip()
+    return table_name, selected_columns, conditions, order_by, limit, distinct, group_by, having, join, alias_map
 
-    return table_name, selected_columns, conditions, order_by, limit, distinct, group_by, having
 
-def resolve_subqueries(conditions: list, db):
-    for cond in conditions:
-        ctype = cond.get("type")
-        if ctype in ("and", "or"):
-            resolve_subqueries([cond["left"]], db)
-            resolve_subqueries([cond["right"]], db)
-        elif ctype == "not":
-            resolve_subqueries([cond["condition"]], db)
-        elif ctype == "exists":
-            t, sc, c, o, l, d, g, h = parse_select(cond["subquery"])
-            table = db.get_table(t)
-            rows = table.select_aggregate(sc, c, g, h) if g else table.select_advanced(sc, c, o, l, distinct=d)
-            cond["rows"] = rows
-            del cond["subquery"]
-        elif ctype == "subquery_in":
-            t, sc, c, o, l, d, g, h = parse_select(cond["subquery"])
-            table = db.get_table(t)
-            rows = table.select_aggregate(sc, c, g, h) if g else table.select_advanced(sc, c, o, l, distinct=d)
-            cond["values"] = [row[0] if isinstance(row, list) else row for row in rows]
-            cond["type"] = "in"
-            del cond["subquery"]
-        elif ctype == "any_all":
-            t, sc, c, o, l, d, g, h = parse_select(cond["subquery"])
-            table = db.get_table(t)
-            rows = table.select_aggregate(sc, c, g, h) if g else table.select_advanced(sc, c, o, l, distinct=d)
-            cond["values"] = [row[0] if isinstance(row, list) else row for row in rows]
-            del cond["subquery"]
 
 def parse_delete(command: str):
     """
@@ -662,6 +741,129 @@ def parse_create_index(command: str):
     return table_name, column_name
 
 
+
+
+def resolve_subqueries(conditions: list, db):
+    for cond in conditions:
+        ctype = cond.get("type")
+        if ctype in ("and", "or"):
+            resolve_subqueries([cond["left"]], db)
+            resolve_subqueries([cond["right"]], db)
+        elif ctype == "not":
+            resolve_subqueries([cond["condition"]], db)
+        elif ctype == "exists":
+            t, sc, c, o, l, d, g, h, j, am = parse_select(cond["subquery"])
+            table = db.get_table(t)
+            rows = table.select_aggregate(sc, c, g, h) if (g or _has_aggregate(sc)) else table.select_advanced(sc, c, o, l, distinct=d)
+            cond["rows"] = rows
+            del cond["subquery"]
+        elif ctype == "subquery_in":
+            t, sc, c, o, l, d, g, h, j, am = parse_select(cond["subquery"])
+            table = db.get_table(t)
+            rows = table.select_aggregate(sc, c, g, h) if (g or _has_aggregate(sc)) else table.select_advanced(sc, c, o, l, distinct=d)
+            cond["values"] = [row[0] if isinstance(row, list) else row for row in rows]
+            cond["type"] = "in"
+            del cond["subquery"]
+        elif ctype == "any_all":
+            t, sc, c, o, l, d, g, h, j, am = parse_select(cond["subquery"])
+            table = db.get_table(t)
+            rows = table.select_aggregate(sc, c, g, h) if (g or _has_aggregate(sc)) else table.select_advanced(sc, c, o, l, distinct=d)
+            cond["values"] = [row[0] if isinstance(row, list) else row for row in rows]
+            del cond["subquery"]
+
+
+def parse_alter_table(command: str):
+    # parses ALTER TABLE name ADD/DROP/RENAME COLUMN ...
+    command = command.strip().rstrip(";")
+    upper   = command.upper()
+
+    table_idx  = upper.index("TABLE")
+    rest       = command[table_idx + 5:].strip()
+
+    if "ADD COLUMN" in upper:
+        add_idx    = upper.index("ADD COLUMN")
+        table_name = command[table_idx + 5:add_idx - (table_idx + 5 - table_idx + 5)].strip()
+        table_name = rest[:rest.upper().index("ADD COLUMN")].strip()
+        col_def    = rest[rest.upper().index("ADD COLUMN") + 10:].strip()
+        parts      = col_def.split()
+        col_name   = parts[0].lower()
+        col_type   = parts[1].lower()
+        default    = _parse_value(parts[parts[0:].index(parts[0]) + 3]) if "DEFAULT" in [p.upper() for p in parts] else None
+        return "add", table_name, col_name, col_type, default
+
+    if "DROP COLUMN" in upper:
+        table_name = rest[:rest.upper().index("DROP COLUMN")].strip()
+        col_name   = rest[rest.upper().index("DROP COLUMN") + 11:].strip().lower()
+        return "drop", table_name, col_name, None, None
+
+    if "RENAME COLUMN" in upper:
+        table_name = rest[:rest.upper().index("RENAME COLUMN")].strip()
+        rename_part = rest[rest.upper().index("RENAME COLUMN") + 13:].strip()
+        if " TO " not in rename_part.upper():
+            raise ValueError("RENAME COLUMN requires TO: RENAME COLUMN old TO new")
+        to_idx   = rename_part.upper().index(" TO ")
+        old_name = rename_part[:to_idx].strip().lower()
+        new_name = rename_part[to_idx + 4:].strip().lower()
+        return "rename", table_name, old_name, new_name, None
+
+    raise ValueError(f"Unknown ALTER TABLE syntax: {command}")
+
+
+def parse_truncate(command: str) -> str:
+    command = command.strip().rstrip(";")
+    upper   = command.upper()
+    if "TABLE" not in upper:
+        raise ValueError("TRUNCATE requires TABLE keyword.")
+    return command[upper.index("TABLE") + 5:].strip()
+
+
+def parse_rename_table(command: str) -> tuple:
+    command = command.strip().rstrip(";")
+    upper   = command.upper()
+    if "TABLE" not in upper:
+        raise ValueError("RENAME TABLE requires TABLE keyword.")
+    rest = command[upper.index("TABLE") + 5:].strip()
+    if " TO " not in rest.upper():
+        raise ValueError("RENAME TABLE requires TO: RENAME TABLE old TO new")
+    to_idx   = rest.upper().index(" TO ")
+    old_name = rest[:to_idx].strip()
+    new_name = rest[to_idx + 4:].strip()
+    return old_name, new_name
+
+
+def parse_create_view(command: str) -> tuple:
+    command = command.strip().rstrip(";")
+    upper   = command.upper()
+    replace = "OR REPLACE" in upper
+    if "VIEW" not in upper:
+        raise ValueError("CREATE VIEW requires VIEW keyword.")
+    if " AS " not in upper:
+        raise ValueError("CREATE VIEW requires AS keyword.")
+    view_start = upper.index("VIEW") + 4
+    as_idx     = upper.index(" AS ")
+    view_name  = command[view_start:as_idx].strip().lower()
+    select_sql = command[as_idx + 4:].strip()
+    return view_name, select_sql, replace
+
+def parse_drop_view(command: str) -> str:
+    command = command.strip().rstrip(";")
+    upper   = command.upper()
+    if "VIEW" not in upper:
+        raise ValueError("DROP VIEW requires VIEW keyword.")
+    return command[upper.index("VIEW") + 4:].strip().lower()
+
+
+def parse_explain(command: str) -> str:
+    # strip EXPLAIN keyword and return the inner SELECT
+    command = command.strip().rstrip(";")
+    upper   = command.upper()
+    if not upper.startswith("EXPLAIN"):
+        raise ValueError("EXPLAIN must be followed by a SELECT statement.")
+    return command[7:].strip()
+
+
+
+
 def main():
     print("Welcome to PyBase CLI! Type 'exit' to quit.")
     while True:
@@ -676,7 +878,6 @@ def main():
             if cmd_upper in ("BEGIN", "BEGIN;"):
                 db.begin_transaction()
                 print("Transaction started.")
-            
 
             elif cmd_upper.startswith("SAVEPOINT"):
                 name = command.strip().rstrip(";")[len("SAVEPOINT"):].strip()
@@ -698,7 +899,6 @@ def main():
                     raise ValueError("No active transaction.")
                 db.current_transaction.rollback_to_savepoint(name)
                 print(f"Rolled back to savepoint '{name}'.")
-
 
             elif cmd_upper in ("COMMIT", "COMMIT;"):
                 results = db.commit_transaction()
@@ -796,15 +996,26 @@ def main():
 
             elif cmd_upper.startswith("SELECT"):
                 set_op = _detect_set_operator(command)
+                alias_map = {}
+
                 if set_op:
                     operator, left_sql, right_sql = set_op
+
                     def exec_side(s):
-                        t, sc, c, o, l, d, g, h = parse_select(s)
+                        t, sc, c, o, l, d, g, h, j, am = parse_select(s)
+                        if t in db.views:
+                            t, sc, c, o, l, d, g, h, j, am = parse_select(db.views[t])
                         resolve_subqueries(c, db)
-                        table = db.get_table(t)
-                        return table.select_aggregate(sc, c, g, h) if g else table.select_advanced(sc, c, o, l, distinct=d)
+                        if j:
+                            plan = QueryPlanner.build(j, sc, c, o, l, d)
+                            rows, _, _ = QueryExecutor(db).execute(plan)
+                            return rows
+                        return db.get_table(t).select_aggregate(sc, c, g, h) if (g or _has_aggregate(sc)) else db.get_table(t).select_advanced(sc, c, o, l, distinct=d)
+                
+                
                     left_rows  = exec_side(left_sql)
                     right_rows = exec_side(right_sql)
+
                     if operator == "UNION ALL":
                         rows = left_rows + right_rows
                     elif operator == "UNION":
@@ -824,17 +1035,35 @@ def main():
                                 seen.append(row); rows.append(row)
                     else:
                         rows = left_rows
+
                 else:
-                    table_name, selected_columns, conditions, order_by, limit, distinct, group_by, having = parse_select(command)
+                    (table_name, selected_columns, conditions, order_by,
+                     limit, distinct, group_by, having, join, alias_map) = parse_select(command)
                     resolve_subqueries(conditions, db)
-                    table = db.get_table(table_name)
-                    if group_by:
-                        rows = table.select_aggregate(selected_columns, conditions, group_by, having)
+
+                    if table_name in db.views:
+                        (table_name, selected_columns, conditions, order_by,
+                        limit, distinct, group_by, having, join, alias_map) = parse_select(db.views[table_name])
+                        resolve_subqueries(conditions, db)
+
+                    if join:
+                        plan = QueryPlanner.build(join, selected_columns, conditions, order_by, limit, distinct)
+                        rows, col_names, _ = QueryExecutor(db).execute(plan)
+                  
+                    elif group_by or _has_aggregate(selected_columns):
+                    
+                        rows = db.get_table(table_name).select_aggregate(selected_columns, conditions, group_by, having)
                     else:
-                        rows = table.select_advanced(selected_columns, conditions, order_by, limit, distinct=distinct)
+                        rows = db.get_table(table_name).select_advanced(selected_columns, conditions, order_by, limit, distinct=distinct)
+
+                # print aliased column headers when aliases are present
+                if alias_map and not set_op and not join:
+                    headers = [alias_map.get(col, col) for col in selected_columns]
+                    print(headers)
+
                 for r in rows:
                     print(r)
-                    
+
             elif cmd_upper.startswith("DELETE FROM"):
                 table_name, conditions = parse_delete(command)
 
@@ -844,7 +1073,6 @@ def main():
                 else:
                     table         = db.get_table(table_name)
                     deleted_count = table.delete(conditions, db=db)
-
                     print(f"{deleted_count} row(s) deleted from '{table_name}'.")
 
             elif cmd_upper.startswith("UPDATE"):
@@ -861,6 +1089,48 @@ def main():
                     table         = db.get_table(table_name)
                     updated_count = table.update(assignments, conditions, db=db)
                     print(f"{updated_count} row(s) updated in '{table_name}'.")
+
+
+            elif cmd_upper.startswith("EXPLAIN"):
+                inner_sql = parse_explain(command)
+                table_name, selected_columns, conditions, order_by, limit, distinct, group_by, having, join, alias_map = parse_select(inner_sql)
+                table = db.get_table(table_name)
+                print(table.explain(selected_columns, conditions, order_by, group_by, join, alias_map))
+
+            elif cmd_upper.startswith("ALTER TABLE"):
+                action, table_name, col_a, col_b, extra = parse_alter_table(command)
+                table = db.get_table(table_name)
+                if action == "add":
+                    table.alter_add_column(col_a, col_b, default=extra)
+                    print(f"Column '{col_a}' added to '{table_name}'.")
+                elif action == "drop":
+                    table.alter_drop_column(col_a)
+                    print(f"Column '{col_a}' dropped from '{table_name}'.")
+                elif action == "rename":
+                    table.alter_rename_column(col_a, col_b)
+                    print(f"Column '{col_a}' renamed to '{col_b}' in '{table_name}'.")
+
+            elif cmd_upper.startswith("TRUNCATE"):
+                table_name = parse_truncate(command)
+                db.get_table(table_name).truncate()
+                print(f"Table '{table_name}' truncated.")
+
+            elif cmd_upper.startswith("RENAME TABLE"):
+                old_name, new_name = parse_rename_table(command)
+                db.rename_table(old_name, new_name)
+                print(f"Table '{old_name}' renamed to '{new_name}'.")
+
+            elif cmd_upper.startswith("CREATE VIEW") or cmd_upper.startswith("CREATE OR REPLACE VIEW"):
+
+                view_name, select_sql, replace = parse_create_view(command)
+                db.create_view(view_name, select_sql, replace)
+                print(f"View '{view_name}' created.")
+
+            elif cmd_upper.startswith("DROP VIEW"):
+                view_name = parse_drop_view(command)
+                db.drop_view(view_name)
+                print(f"View '{view_name}' dropped.")
+
 
             else:
                 print("Unsupported command.")

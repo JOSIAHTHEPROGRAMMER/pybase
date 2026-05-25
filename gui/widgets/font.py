@@ -7,6 +7,13 @@ def get_mono_font(size: int = 12) -> QFont:
     Falls back to the system default monospace if none are found.
     Qt does not support CSS-style comma-separated font fallbacks.
     """
+
+    if size <= 0:
+       size = 12
+
+
+
+
     preferred = ["JetBrains Mono", "Cascadia Code", "Cascadia Mono", "Consolas", "Courier New"]
     available = QFontDatabase.families()
 

@@ -30,6 +30,10 @@ class Pager:
         """
         size = 0
         for _, column_type in self.columns:
+
+            size += 1  # null flag byte
+
+            
             if column_type == "int":
                 size += 4
             elif column_type == "bigint":

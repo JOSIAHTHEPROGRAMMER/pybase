@@ -31,13 +31,18 @@ class SQLHighlighter(QSyntaxHighlighter):
         "BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE",
         # Boolean literals
         "TRUE", "FALSE",
-        # Batch C: query system
+        # Query system
         "DISTINCT",
         "AS",
         "UNION", "INTERSECT", "EXCEPT", "ALL",
         "GROUP", "HAVING",
         "EXISTS", "ANY",
         "COUNT", "SUM", "AVG", "MIN", "MAX",
+
+        "ALTER", "ADD", "COLUMN", "RENAME", "TRUNCATE", "VIEW", "EXPLAIN", "TO",
+
+        # Joins
+        "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "ON",
     ]
 
     TYPES = ["INT", "BIGINT", "FLOAT", "BOOLEAN", "BOOL", "STRING"]

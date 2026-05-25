@@ -128,10 +128,9 @@ class ChartPanel(QWidget):
 
     def _classify_columns(self, columns, rows):
         """
-        Inspect the first row of data to classify each column as
-        numeric (int or float) or categorical (string).
-        Returns two lists: str_cols and num_cols, each containing
-        (index, column_name) tuples.
+        Inspect rows to classify each column as numeric or categorical.
+        Skips None values when sampling to avoid misclassifying nullable columns.
+        Returns two lists: str_cols and num_cols as (index, column_name) tuples.
         """
         if not rows:
             return [], []
@@ -140,7 +139,13 @@ class ChartPanel(QWidget):
         num_cols = []
 
         for i, col in enumerate(columns):
-            sample = rows[0][i]
+            # find first non-None value to correctly classify the column type
+            sample = None
+            for row in rows:
+                if row[i] is not None:
+                    sample = row[i]
+                    break
+
             if isinstance(sample, (int, float)):
                 num_cols.append((i, col))
             else:
@@ -221,7 +226,7 @@ class ChartPanel(QWidget):
         One numeric only          ->  Histogram
         Multiple rows + one numeric -> Line
         """
-        has_str = len(str_cols) > 0
+        has_str   = len(str_cols) > 0
         num_count = len(num_cols)
         row_count = len(rows)
 
@@ -240,16 +245,23 @@ class ChartPanel(QWidget):
         Draw a bar chart.
         Uses the first string column as labels and the first numeric column as values.
         Falls back to row index as labels if no string column exists.
+        Skips rows where the numeric value is None.
         """
         num_idx, num_name = num_cols[0]
-        values = [row[num_idx] for row in rows]
 
         if str_cols:
             str_idx, str_name = str_cols[0]
-            labels = [str(row[str_idx]) for row in rows]
+            pairs  = [(str(row[str_idx]), row[num_idx]) for row in rows if row[num_idx] is not None]
+            labels = [p[0] for p in pairs]
+            values = [p[1] for p in pairs]
         else:
-            labels = [str(i + 1) for i in range(len(rows))]
             str_name = "Row"
+            pairs    = [(i + 1, row[num_idx]) for i, row in enumerate(rows) if row[num_idx] is not None]
+            labels   = [str(p[0]) for p in pairs]
+            values   = [p[1] for p in pairs]
+
+        if not values:
+            return False
 
         ax = self.figure.add_subplot(111)
         self._style_ax(ax)
@@ -258,10 +270,13 @@ class ChartPanel(QWidget):
 
         ax.set_xlabel(str_name if str_cols else "Row", color=TEXT_MUTED, fontsize=10)
         ax.set_ylabel(num_name, color=TEXT_MUTED, fontsize=10)
-        ax.set_title(f"{num_name} by {str_name if str_cols else 'Row'}",
-                     color=TEXT_PRIMARY, fontsize=11, pad=10)
+        ax.set_title(
+            f"{num_name} by {str_name if str_cols else 'Row'}",
+            color=TEXT_PRIMARY, fontsize=11, pad=10
+        )
 
         if len(labels) > 8:
+            ax.set_xticks(range(len(labels)))
             ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
 
         max_val = max(values) if values else 1
@@ -281,6 +296,7 @@ class ChartPanel(QWidget):
         Draw a line chart.
         Plots each numeric column as a separate line.
         Uses the first string column or row index as the x axis.
+        Skips None values per column.
         """
         ax = self.figure.add_subplot(111)
         self._style_ax(ax)
@@ -296,16 +312,21 @@ class ChartPanel(QWidget):
             ax.set_xlabel("Row", color=TEXT_MUTED, fontsize=10)
 
         for k, (num_idx, num_name) in enumerate(num_cols):
-            values = [row[num_idx] for row in rows]
+            # pair x position with value, skip None entries
+            pairs  = [(x, row[num_idx]) for x, row in zip(x_vals, rows) if row[num_idx] is not None]
+            xs     = [p[0] for p in pairs]
+            values = [p[1] for p in pairs]
             color  = CHART_COLORS[k % len(CHART_COLORS)]
-            ax.plot(x_vals, values, color=color, linewidth=2,
+            ax.plot(xs, values, color=color, linewidth=2,
                     marker="o", markersize=5, label=num_name, zorder=3)
 
         ax.set_xticks(x_vals)
-        ax.set_xticklabels(x_labels,
-                           rotation=35 if len(x_labels) > 8 else 0,
-                           ha="right" if len(x_labels) > 8 else "center",
-                           fontsize=8)
+        ax.set_xticklabels(
+            x_labels,
+            rotation=35 if len(x_labels) > 8 else 0,
+            ha="right" if len(x_labels) > 8 else "center",
+            fontsize=8
+        )
 
         ax.set_title("Line Chart", color=TEXT_PRIMARY, fontsize=11, pad=10)
 
@@ -322,19 +343,21 @@ class ChartPanel(QWidget):
         Draw a pie chart.
         Uses the first numeric column as slice sizes.
         Uses the first string column as slice labels if available.
-        Only renders if all values are positive.
+        Only renders if all non-None values are positive.
         """
         num_idx, num_name = num_cols[0]
-        values = [row[num_idx] for row in rows]
-
-        if any(v <= 0 for v in values):
-            return False
 
         if str_cols:
             str_idx, _ = str_cols[0]
-            labels = [str(row[str_idx]) for row in rows]
+            pairs  = [(str(row[str_idx]), row[num_idx]) for row in rows if row[num_idx] is not None]
         else:
-            labels = [str(i + 1) for i in range(len(rows))]
+            pairs = [(str(i + 1), row[num_idx]) for i, row in enumerate(rows) if row[num_idx] is not None]
+
+        labels = [p[0] for p in pairs]
+        values = [p[1] for p in pairs]
+
+        if not values or any(v <= 0 for v in values):
+            return False
 
         ax = self.figure.add_subplot(111)
         ax.set_facecolor(PANEL)
@@ -360,8 +383,10 @@ class ChartPanel(QWidget):
             autotext.set_fontsize(8)
             autotext.set_fontweight("bold")
 
-        ax.set_title(f"{num_name} distribution",
-                     color=TEXT_PRIMARY, fontsize=11, pad=10)
+        ax.set_title(
+            f"{num_name} distribution",
+            color=TEXT_PRIMARY, fontsize=11, pad=10
+        )
 
         return True
 
@@ -370,7 +395,7 @@ class ChartPanel(QWidget):
         Draw a scatter plot.
         Requires at least two numeric columns.
         Uses the first as x and the second as y.
-        Additional numeric columns are ignored.
+        Skips rows where either value is None.
         """
         if len(num_cols) < 2:
             return False
@@ -378,8 +403,13 @@ class ChartPanel(QWidget):
         x_idx, x_name = num_cols[0]
         y_idx, y_name = num_cols[1]
 
-        x_vals = [row[x_idx] for row in rows]
-        y_vals = [row[y_idx] for row in rows]
+        pairs  = [(row[x_idx], row[y_idx]) for row in rows
+                  if row[x_idx] is not None and row[y_idx] is not None]
+        x_vals = [p[0] for p in pairs]
+        y_vals = [p[1] for p in pairs]
+
+        if not x_vals:
+            return False
 
         ax = self.figure.add_subplot(111)
         self._style_ax(ax)
@@ -403,9 +433,13 @@ class ChartPanel(QWidget):
         Draw a histogram of the first numeric column.
         Bin count is automatically chosen based on the number of rows.
         Shows the distribution of values across the dataset.
+        Skips None values.
         """
         num_idx, num_name = num_cols[0]
-        values = [row[num_idx] for row in rows]
+        values = [row[num_idx] for row in rows if row[num_idx] is not None]
+
+        if not values:
+            return False
 
         bins = min(max(5, len(values) // 3), 20)
 

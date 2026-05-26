@@ -24,16 +24,16 @@ Full CRUD with `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TAB
 
 **Query System**
 
-- Column projection — `SELECT name, id FROM ...` or `SELECT *`
-- `SELECT DISTINCT` — removes duplicate rows from the result
-- Column aliases — `SELECT salary AS pay FROM emp`
-- Table aliases — `FROM employees AS e`
-- `ORDER BY` — `ASC` and `DESC` on any column
-- `LIMIT` — cap result set size
-- `GROUP BY` with `HAVING` — group rows and filter groups
-- Aggregate functions — `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
-- Set operations — `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
-- Subqueries — in `WHERE` with `IN`, `EXISTS`, `ANY`, `ALL`
+- Column projection - `SELECT name, id FROM ...` or `SELECT *`
+- `SELECT DISTINCT` - removes duplicate rows from the result
+- Column aliases - `SELECT salary AS pay FROM emp`
+- Table aliases - `FROM employees AS e`
+- `ORDER BY` - `ASC` and `DESC` on any column
+- `LIMIT` - cap result set size
+- `GROUP BY` with `HAVING` - group rows and filter groups
+- Aggregate functions - `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
+- Set operations - `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
+- Subqueries - in `WHERE` with `IN`, `EXISTS`, `ANY`, `ALL`
 - B-Tree index used automatically for single equality conditions on indexed columns
 - Rich WHERE clauses:
   - Comparison: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`
@@ -48,29 +48,29 @@ Full CRUD with `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TAB
 **Transactions**
 
 - `BEGIN`, `COMMIT`, `ROLLBACK`
-- Two-phase commit — validates all operations before applying any (true atomicity)
+- Two-phase commit - validates all operations before applying any (true atomicity)
 - FK constraints validated at commit time
-- Failed commits auto-cancel the transaction — no manual `ROLLBACK` needed
-- `SAVEPOINT name` — create a named restore point inside a transaction
-- `ROLLBACK TO SAVEPOINT name` — undo back to a savepoint without ending the transaction
-- `RELEASE SAVEPOINT name` — discard a savepoint
+- Failed commits auto-cancel the transaction - no manual `ROLLBACK` needed
+- `SAVEPOINT name` - create a named restore point inside a transaction
+- `ROLLBACK TO SAVEPOINT name` - undo back to a savepoint without ending the transaction
+- `RELEASE SAVEPOINT name` - discard a savepoint
 - Nested transactions blocked
 
 **Desktop GUI**
 
 - SQL editor with syntax highlighting and `Ctrl+Enter` to run
 - `Ctrl+/` to toggle line comments on selected lines
-- Run selected text only — highlight a statement and run just that
+- Run selected text only - highlight a statement and run just that
 - Multi-statement execution with comment stripping
-- Query history dropdown — persisted to `data/history.json`
+- Query history dropdown - persisted to `data/history.json`
 - Results table with row numbers and column headers
 - Bar, line, pie, scatter, and histogram chart tab via matplotlib
 - Live ER diagram tab with crow's foot notation and FK relationship lines
 - Schema browser with table row counts, column types, and constraint tags (PK, FK, UQ, IDX)
-- Transaction status indicator — green dot when a transaction is active
+- Transaction status indicator - green dot when a transaction is active
 - `DROP TABLE` and `DROP DATABASE` confirmation dialogs
 - Error and status messages are selectable and copyable
-- Dark Neon theme — `#0f0f0f` background, `#00e599` accent
+- Dark Neon theme - `#0f0f0f` background, `#00e599` accent
 
 ---
 
@@ -97,7 +97,7 @@ pybase/
 │       ├── history.py      # Query history dropdown with persistence
 │       └── status_bar.py   # Transaction status indicator
 ├── query/
-│   └── expression.py       # Full expression evaluator — comparisons, logical, arithmetic, bitwise, subqueries
+│   └── expression.py       # Full expression evaluator - comparisons, logical, arithmetic, bitwise, subqueries
 ├── storage/
 │   ├── btree.py            # B-Tree and BTreeNode data structures
 │   ├── index_manager.py    # Owns and manages B-Tree indexes per table
@@ -123,7 +123,7 @@ pybase/
 | `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                 |
 | `storage/btree.py`          | Sorted key-value tree with O(log n) search                    |
 | `storage/index_manager.py`  | Create, rebuild, and query B-Tree indexes                     |
-| `gui/`                      | PyQt6 desktop interface — editor, results, charts, ER diagram |
+| `gui/`                      | PyQt6 desktop interface - editor, results, charts, ER diagram |
 
 ---
 
@@ -292,7 +292,7 @@ Each table produces two files in the `data/` directory:
 | File                | Contents                                                                          |
 | ------------------- | --------------------------------------------------------------------------------- |
 | `table_name.db`     | Fixed-width binary row data                                                       |
-| `table_name.schema` | JSON — columns, types, constraints, indexes, foreign keys, auto increment counter |
+| `table_name.schema` | JSON - columns, types, constraints, indexes, foreign keys, auto increment counter |
 
 On startup the database scans `data/` for `.schema` files and reloads all tables automatically, rebuilding B-Tree indexes and restoring all constraint definitions.
 
@@ -305,7 +305,7 @@ PyBase uses a two-phase atomic commit model:
 - `BEGIN` starts buffering `INSERT`, `UPDATE`, and `DELETE` operations
 - `COMMIT` runs Phase 1 (validate all operations) then Phase 2 (apply all operations)
 - If Phase 1 finds any violation, nothing is applied and the transaction is auto-cancelled
-- `ROLLBACK` discards the buffer — nothing is written
+- `ROLLBACK` discards the buffer - nothing is written
 - `SAVEPOINT name` creates a named restore point inside the active transaction
 - `ROLLBACK TO SAVEPOINT name` undoes back to that point without ending the transaction
 - `RELEASE SAVEPOINT name` discards a savepoint once it is no longer needed

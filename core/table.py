@@ -12,7 +12,9 @@ class Table:
         "bigint":  int,
         "float":   float,
         "boolean": bool,
-        "string":  str
+        "string":  str,
+        # varchar and char are treated as strings with max length
+
     }
 
     def __init__(self, name: str, columns: list[tuple[str, str]],
@@ -63,11 +65,12 @@ class Table:
         Fails fast at table creation rather than at insert time.
         """
         for column_name, column_type in self.columns:
-            if column_type not in self.SUPPORTED_TYPES:
+            base = column_type.split("(")[0]
+            if base not in ("int", "bigint", "float", "boolean", "string", "varchar", "char"):
                 raise ValueError(
-                    f"Unsupported column type '{column_type}' "
-                    f"for column '{column_name}'."
+                    f"Unsupported column type '{column_type}' for column '{column_name}'."
                 )
+            
 
     def _persist_schema(self):
         """
@@ -735,7 +738,7 @@ class Table:
     def insert(self, row: list, db=None):
         """
         Validate and insert a new row into the table.
-
+ 
         Steps in order:
         1. Handle AUTO_INCREMENT injection if PK column is omitted
         2. Apply DEFAULT values for any missing or None columns
@@ -753,12 +756,12 @@ class Table:
         14. Update all active indexes
         """
         column_index = self._build_column_index()
-
+ 
         # AUTO_INCREMENT: inject next value if PK column is omitted
         if self.auto_increment is not None:
             ai_col = self.auto_increment["column"]
             ai_idx = column_index[ai_col]
-
+ 
             if len(row) == len(self.columns) - 1:
                 next_val = self._get_next_auto_increment()
                 row = list(row[:ai_idx]) + [next_val] + list(row[ai_idx:])
@@ -766,39 +769,42 @@ class Table:
                 next_val = self._get_next_auto_increment()
                 row = list(row)
                 row[ai_idx] = next_val
-
+ 
         # Apply DEFAULT values for columns that are None and have a default
         row = list(row)
         for col_name, _ in self.columns:
             idx = column_index[col_name]
             if idx < len(row) and row[idx] is None and col_name in self.default_values:
                 row[idx] = self.default_values[col_name]
-
+ 
         if len(row) != len(self.columns):
             raise ValueError(
                 f"Expected {len(self.columns)} values, got {len(row)}."
             )
-
+ 
         for value, (column_name, column_type) in zip(row, self.columns):
-            expected_python_type = self.SUPPORTED_TYPES[column_type]
-            if value is not None and not isinstance(value, expected_python_type):
+            base_type = column_type.split("(")[0]
+            expected_python_type = {"int": int, "bigint": int, "float": float,
+                                    "boolean": bool, "string": str,
+                                    "varchar": str, "char": str}.get(base_type)
+            if expected_python_type and value is not None and not isinstance(value, expected_python_type):
                 raise TypeError(
                     f"Column '{column_name}' expects type '{column_type}', "
                     f"but got '{type(value).__name__}'."
                 )
-
+ 
         self._validate_not_null(row)
-
+ 
         if self.primary_key is not None:
             pk_index = column_index[self.primary_key]
             if row[pk_index] is None:
                 raise ValueError(
                     f"PRIMARY KEY column '{self.primary_key}' cannot be NULL."
                 )
-
+ 
         if row in self.rows:
             raise ValueError("Duplicate row insertion is not allowed.")
-
+ 
         for unique_col in self.unique_columns:
             idx = column_index[unique_col]
             for existing_row in self.rows:
@@ -806,15 +812,15 @@ class Table:
                     raise ValueError(
                         f"Duplicate value for UNIQUE column '{unique_col}'."
                     )
-
+ 
         self._validate_composite_primary_key(row)
         self._validate_composite_unique(row)
         self._validate_check_constraints(row)
         self._validate_foreign_keys(row, db)
-
+ 
         self.rows.append(row)
         self.pager.append_row(row)
-
+ 
         for col in self.index_manager.indexes:
             self.index_manager.index_row(col, row[column_index[col]], row)
 
@@ -1101,17 +1107,17 @@ class Table:
         """
         Update specific columns in rows matching ALL conditions.
         Requires at least one WHERE condition.
-
+ 
         assignments: list of (column, value) tuples
         conditions:  list of condition dicts for Expression.evaluate
         db:          optional database reference for FK and CASCADE
-
+ 
         Enforces types, NOT NULL, UNIQUE, composite UNIQUE, CHECK, FK constraints.
         Applies DEFAULT values if assignment value is None and default exists.
         Triggers ON UPDATE CASCADE on child tables if db is provided.
         Rewrites the .db file after updates via pager.
         Rebuilds all active B-Tree indexes after rewrite.
-
+ 
         Returns the number of rows updated.
         """
         if not conditions:
@@ -1119,51 +1125,55 @@ class Table:
                 "UPDATE requires at least one WHERE condition. "
                 "Full table updates are not supported yet."
             )
-
+ 
         column_index = self._build_column_index()
         column_types = {name: ctype for name, ctype in self.columns}
-
+ 
         for col, value in assignments:
             if col not in column_index:
                 raise ValueError(f"Column '{col}' does not exist.")
-
+ 
             if value is None and col in self.default_values:
                 value = self.default_values[col]
-
-            expected_type = self.SUPPORTED_TYPES[column_types[col]]
-            if value is not None and not isinstance(value, expected_type):
+ 
+            column_type = column_types[col]
+            base_type = column_type.split("(")[0]
+            expected_python_type = {"int": int, "bigint": int, "float": float,
+                                    "boolean": bool, "string": str,
+                                    "varchar": str, "char": str}.get(base_type)
+            if expected_python_type and value is not None and not isinstance(value, expected_python_type):
                 raise TypeError(
-                    f"Column '{col}' expects type '{column_types[col]}', "
+                    f"Column '{col}' expects type '{column_type}', "
                     f"but got '{type(value).__name__}'."
                 )
-
+ 
             if col == self.primary_key and value is None:
                 raise ValueError(
                     f"PRIMARY KEY column '{self.primary_key}' cannot be set to NULL."
                 )
-
+ 
             if col in self.not_null_columns and value is None:
                 raise ValueError(f"Column '{col}' cannot be set to NULL.")
-
+ 
         for condition in conditions:
             if condition.get("type") == "simple":
                 if condition["column"] not in column_index:
                     raise ValueError(
                         f"Column '{condition['column']}' does not exist."
                     )
-
+ 
         updated_count = 0
         updated_rows  = []
         old_rows      = []
-
+ 
         for row in self.rows:
             if self._matches_conditions(row, conditions, column_index):
                 new_row = list(row)
-
+ 
                 for col, value in assignments:
                     if value is None and col in self.default_values:
                         value = self.default_values[col]
-
+ 
                     if col in self.unique_columns:
                         idx = column_index[col]
                         for existing_row in self.rows:
@@ -1171,28 +1181,27 @@ class Table:
                                 raise ValueError(
                                     f"Duplicate value for UNIQUE column '{col}'."
                                 )
-
+ 
                     new_row[column_index[col]] = value
-
+ 
                 self._validate_composite_unique(new_row, exclude_row=row)
                 self._validate_check_constraints(new_row)
                 self._validate_foreign_keys(new_row, db)
-
+ 
                 old_rows.append(row)
                 updated_rows.append(new_row)
                 updated_count += 1
             else:
                 updated_rows.append(row)
-
+ 
         if updated_count > 0:
             self.rows = updated_rows
             self.pager.rewrite_all_rows(updated_rows)
-
+ 
             for col in self.index_manager.indexes:
                 self.index_manager.rebuild(col, self.rows, column_index[col])
-
+ 
             # Trigger CASCADE updates in child tables
-            new_matched = [r for r in updated_rows if r in updated_rows]
             self._apply_cascade_update(old_rows, updated_rows[:updated_count], db)
-
+ 
         return updated_count

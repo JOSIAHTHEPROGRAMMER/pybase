@@ -3,6 +3,8 @@ from storage.schema_manager import SchemaManager
 from storage.index_manager import IndexManager
 from query.expression import Expression
 from query.utils import _has_aggregate
+from datetime import date, datetime, time
+from decimal import Decimal
 import os
 
 
@@ -13,6 +15,7 @@ class Table:
         "float":   float,
         "boolean": bool,
         "string":  str,
+
         # varchar and char are treated as strings with max length
 
     }
@@ -66,7 +69,8 @@ class Table:
         """
         for column_name, column_type in self.columns:
             base = column_type.split("(")[0]
-            if base not in ("int", "bigint", "float", "boolean", "string", "varchar", "char"):
+            if base not in ("int", "bigint", "float", "boolean", "string", "varchar", "char", "decimal", "money",
+                "date", "datetime", "timestamp", "time"):
                 raise ValueError(
                     f"Unsupported column type '{column_type}' for column '{column_name}'."
                 )
@@ -776,6 +780,18 @@ class Table:
             idx = column_index[col_name]
             if idx < len(row) and row[idx] is None and col_name in self.default_values:
                 row[idx] = self.default_values[col_name]
+
+        for col_name, col_type in self.columns:
+            idx = column_index[col_name]
+            if idx < len(row) and row[idx] is not None:
+                base = col_type.split("(")[0]
+                if base == "decimal" and not isinstance(row[idx], Decimal):
+                  
+                    scale = int(col_type[col_type.index(",")+1:col_type.index(")")])
+                    quantizer = Decimal(10) ** -scale
+                    row[idx] = Decimal(str(row[idx])).quantize(quantizer)
+                elif base == "money" and not isinstance(row[idx], Decimal):
+                    row[idx] = Decimal(str(row[idx])).quantize(Decimal("0.01"))
  
         if len(row) != len(self.columns):
             raise ValueError(
@@ -784,9 +800,21 @@ class Table:
  
         for value, (column_name, column_type) in zip(row, self.columns):
             base_type = column_type.split("(")[0]
-            expected_python_type = {"int": int, "bigint": int, "float": float,
-                                    "boolean": bool, "string": str,
-                                    "varchar": str, "char": str}.get(base_type)
+            expected_python_type = {
+                "int":       int,
+                "bigint":    int,
+                "float":     float,
+                "boolean":   bool,
+                "string":    str,
+                "varchar":   str,
+                "char":      str,
+                "decimal": (int, float, Decimal),
+                "money":   (int, float, Decimal),
+                "date":      date,
+                "datetime":  datetime,
+                "timestamp": datetime,
+                "time":      time,
+            }.get(base_type)
             if expected_python_type and value is not None and not isinstance(value, expected_python_type):
                 raise TypeError(
                     f"Column '{column_name}' expects type '{column_type}', "
@@ -1138,9 +1166,21 @@ class Table:
  
             column_type = column_types[col]
             base_type = column_type.split("(")[0]
-            expected_python_type = {"int": int, "bigint": int, "float": float,
-                                    "boolean": bool, "string": str,
-                                    "varchar": str, "char": str}.get(base_type)
+            expected_python_type = {
+                    "int":       int,
+                    "bigint":    int,
+                    "float":     float,
+                    "boolean":   bool,
+                    "string":    str,
+                    "varchar":   str,
+                    "char":      str,
+                    "decimal": (int, float, Decimal),
+                    "money":   (int, float, Decimal),
+                    "date":      date,
+                    "datetime":  datetime,
+                    "timestamp": datetime,
+                    "time":      time,
+                }.get(base_type)
             if expected_python_type and value is not None and not isinstance(value, expected_python_type):
                 raise TypeError(
                     f"Column '{col}' expects type '{column_type}', "
@@ -1183,6 +1223,19 @@ class Table:
                                 )
  
                     new_row[column_index[col]] = value
+
+
+                for col_name, col_type in self.columns:
+                    idx = column_index[col_name]
+                    if idx < len(row) and row[idx] is not None:
+                        base = col_type.split("(")[0]
+                        if base == "decimal" and not isinstance(row[idx], Decimal):
+                           
+                            scale = int(col_type[col_type.index(",")+1:col_type.index(")")])
+                            quantizer = Decimal(10) ** -scale
+                            row[idx] = Decimal(str(row[idx])).quantize(quantizer)
+                        elif base == "money" and not isinstance(row[idx], Decimal):
+                            row[idx] = Decimal(str(row[idx])).quantize(Decimal("0.01"))
  
                 self._validate_composite_unique(new_row, exclude_row=row)
                 self._validate_check_constraints(new_row)

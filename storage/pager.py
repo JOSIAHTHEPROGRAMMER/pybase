@@ -48,6 +48,17 @@ class Pager:
             elif column_type.startswith("varchar(") or column_type.startswith("char("):
                 n = int(column_type[column_type.index("(") + 1:column_type.index(")")])
                 size += 1 + n
+
+
+            elif column_type.startswith("decimal(") or column_type == "money":
+                size += 8
+            elif column_type == "date":
+                size += 4
+            elif column_type in ("datetime", "timestamp"):
+                size += 8
+            elif column_type == "time":
+                size += 4
+                
         return size
 
     def append_row(self, row: list):

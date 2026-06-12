@@ -1,8 +1,18 @@
 import struct
-
+from datetime import date, datetime, time, timedelta 
+from decimal import Decimal, ROUND_HALF_UP
 
 class Serializer:
     STRING_SIZE = 255
+
+
+    @staticmethod
+    def _decimal_scale(column_type: str) -> int:
+       
+        inner = column_type[column_type.index("(") + 1:column_type.index(")")]
+        return int(inner.split(",")[1].strip())
+
+    MONEY_SCALE = 2
 
 
     @staticmethod
@@ -53,6 +63,20 @@ class Serializer:
                 elif column_type.startswith("varchar(") or column_type.startswith("char("):
                     n = int(column_type[column_type.index("(") + 1:column_type.index(")")])
                     result += b"\x00" + b"\x00" * (1 + n)
+                
+
+                elif column_type.startswith("decimal("):
+                    result += b"\x00" + b"\x00" * 8
+
+                elif column_type == "money":
+                    result += b"\x00" + b"\x00" * 8
+
+                elif column_type == "date":
+                    result += b"\x00" + b"\x00" * 4
+                elif column_type in ("datetime", "timestamp"):
+                    result += b"\x00" + b"\x00" * 8
+                elif column_type == "time":
+                    result += b"\x00" + b"\x00" * 4
                
                 continue
 
@@ -93,6 +117,38 @@ class Serializer:
                 padded = encoded.ljust(n, b"\x00")
                 result += length_prefix + padded
 
+
+    
+            elif column_type.startswith("decimal("):
+                
+                scale = Serializer._decimal_scale(column_type)
+                if not isinstance(value, Decimal):
+                    value = Decimal(str(value))
+                scaled = int((value * (10 ** scale)).quantize(Decimal("1")))
+                result += scaled.to_bytes(8, byteorder="big", signed=True)
+
+            elif column_type == "money":
+                if not isinstance(value, Decimal):
+                    value = Decimal(str(value))
+                scaled = int((value * 100).quantize(Decimal("1")))
+                result += scaled.to_bytes(8, byteorder="big", signed=True)
+
+
+
+            elif column_type == "date":
+                epoch  = date(1970, 1, 1)
+                days   = (value - epoch).days
+                result += days.to_bytes(4, byteorder="big", signed=True)
+
+            elif column_type in ("datetime", "timestamp"):
+                epoch   = datetime(1970, 1, 1)
+                seconds = int((value - epoch).total_seconds())
+                result += seconds.to_bytes(8, byteorder="big", signed=True)
+
+            elif column_type == "time":
+                seconds = value.hour * 3600 + value.minute * 60 + value.second
+                result += seconds.to_bytes(4, byteorder="big", signed=True)
+
         return result
 
     @staticmethod
@@ -125,6 +181,16 @@ class Serializer:
                 elif column_type.startswith("varchar(") or column_type.startswith("char("):
                     n = int(column_type[column_type.index("(") + 1:column_type.index(")")])
                     offset += 1 + n
+
+
+                elif column_type.startswith("decimal(") or column_type == "money":
+                    offset += 8
+                elif column_type == "date":
+                    offset += 4
+                elif column_type in ("datetime", "timestamp"):
+                    offset += 8
+                elif column_type == "time":
+                    offset += 4
                             
                 row.append(None)
                 continue           
@@ -177,5 +243,38 @@ class Serializer:
                 value = raw[:length].decode("utf-8")
                 row.append(value)
                 offset += n
+
+
+
+            elif column_type.startswith("decimal("):
+                print(f"deserializing decimal: raw bytes offset={offset}")
+                scale = Serializer._decimal_scale(column_type)
+                raw = int.from_bytes(data[offset:offset + 8], byteorder="big", signed=True)
+                quantizer = Decimal(10) ** -scale
+                row.append((Decimal(raw) / Decimal(10 ** scale)).quantize(quantizer))
+                offset += 8
+
+            elif column_type == "money":
+                print(f"deserializing money: raw bytes offset={offset}")
+                raw = int.from_bytes(data[offset:offset + 8], byteorder="big", signed=True)
+                row.append((Decimal(raw) / Decimal(100)).quantize(Decimal("0.01")))
+                offset += 8
+
+            elif column_type == "date":
+                days  = int.from_bytes(data[offset:offset + 4], byteorder="big", signed=True)
+                value = date(1970, 1, 1) + timedelta(days=days)
+                row.append(value)
+                offset += 4
+
+            elif column_type in ("datetime", "timestamp"):
+                seconds = int.from_bytes(data[offset:offset + 8], byteorder="big", signed=True)
+                value   = datetime(1970, 1, 1) + timedelta(seconds=seconds)
+                row.append(value)
+                offset += 8
+
+            elif column_type == "time":
+                seconds = int.from_bytes(data[offset:offset + 4], byteorder="big", signed=True)
+                row.append(time(seconds // 3600, (seconds % 3600) // 60, seconds % 60))
+                offset += 4
 
         return row

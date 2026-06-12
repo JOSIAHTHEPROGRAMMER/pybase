@@ -2,6 +2,9 @@ from core.database import Database
 from query.planner import QueryPlanner
 from query.executor import QueryExecutor
 from query.utils import _has_aggregate
+from datetime import date, datetime, time
+from decimal import Decimal, InvalidOperation
+
 db = Database()
 
 
@@ -217,23 +220,33 @@ def _parse_single_condition(part: str) -> dict:
 
 
 def _parse_value(val: str):
-    """
-    Convert a string token to the appropriate Python type.
-    Quoted strings become str.
-    TRUE/FALSE become bool.
-    Numeric strings become int or float.
-    """
     val = val.strip()
-
-    if val.startswith("'") and val.endswith("'"):
-        return val[1:-1]
 
     if val.startswith('"') and val.endswith('"'):
         return val[1:-1]
-    
+
+    if val.startswith("'") and val.endswith("'"):
+        inner = val[1:-1]
+        try:
+            if " " in inner and len(inner) == 19:
+                return datetime.strptime(inner, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            pass
+        try:
+            if len(inner) == 10 and inner[4] == "-":
+                return date.fromisoformat(inner)
+        except ValueError:
+            pass
+        try:
+            if ":" in inner and len(inner) == 8:
+                parts = inner.split(":")
+                return time(int(parts[0]), int(parts[1]), int(parts[2]))
+        except (ValueError, IndexError):
+            pass
+        return inner
+
     if val.upper() == "NULL":
         return None
-
     if val.upper() == "TRUE":
         return True
     if val.upper() == "FALSE":
@@ -1063,6 +1076,7 @@ def main():
 
                 for r in rows:
                     print(r)
+                    print(type(r[0]))
 
             elif cmd_upper.startswith("DELETE FROM"):
                 table_name, conditions = parse_delete(command)

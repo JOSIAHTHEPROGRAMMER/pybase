@@ -6,18 +6,28 @@ from query.utils import _has_aggregate
 from datetime import date, datetime, time
 from decimal import Decimal
 import os
-
+import json
+import xml.etree.ElementTree as ET
 
 class Table:
     SUPPORTED_TYPES = {
-        "int":     int,
-        "bigint":  int,
-        "float":   float,
-        "boolean": bool,
-        "string":  str,
-
-        # varchar and char are treated as strings with max length
-
+        "int":       int,
+        "bigint":    int,
+        "float":     float,
+        "boolean":   bool,
+        "string":    str,
+        "varchar":   str,
+        "char":      str,
+        "decimal":  (int, float, Decimal),
+        "money":    (int, float, Decimal),
+        "date":      date,
+        "datetime":  datetime,
+        "timestamp": datetime,
+        "time":      time,
+        "text":      str,
+        "blob":      bytes,
+        "json":      str,
+        "xml":       str,
     }
 
     def __init__(self, name: str, columns: list[tuple[str, str]],
@@ -28,21 +38,24 @@ class Table:
         self.schema_manager = SchemaManager(name, folder)
         self.pager          = Pager(name, columns, folder)
         self._validate_schema()
-        self.rows          = self.pager.load_all_rows()
+        self.rows, self.row_offsets = self.pager.load_all_rows()
         self.index_manager = IndexManager()
+        
 
         if unique_columns is not None:
-            # Fresh table creation
-            self.unique_columns      = unique_columns
-            self.primary_key         = None
+            self.unique_columns        = unique_columns
+            self.primary_key           = None
             self.composite_primary_key = []
-            self.foreign_keys        = []
-            self.not_null_columns    = set()
-            self.default_values      = {}
-            self.check_constraints   = []
-            self.composite_unique    = []
-            self.auto_increment      = None
+            self.composite_indexes     = []
+            self.hash_indexes          = []  # must be before _persist_schema
+            self.foreign_keys          = []
+            self.not_null_columns      = set()
+            self.default_values        = {}
+            self.check_constraints     = []
+            self.composite_unique      = []
+            self.auto_increment        = None
             self._persist_schema()
+
         else:
             # Reopening existing table
             schema = self.schema_manager.read()
@@ -55,6 +68,7 @@ class Table:
             self.check_constraints     = schema.get("check_constraints", [])
             self.composite_unique      = schema.get("composite_unique", [])
             self.auto_increment        = schema.get("auto_increment", None)
+            self.composite_indexes = schema.get("composite_indexes", [])
 
             column_index = self._build_column_index()
             for col in schema.get("indexes", []):
@@ -62,18 +76,37 @@ class Table:
                     self.index_manager.create_index(col)
                     self.index_manager.rebuild(col, self.rows, column_index[col])
 
+            self.hash_indexes = schema.get("hash_indexes", [])
+
+            for col in self.hash_indexes:
+                if col in column_index:
+                    self.index_manager.create_hash_index(col)
+                    self.index_manager.rebuild_hash(col, self.rows, column_index[col])
+                    
+                    
+           
+           
+            for cols in self.composite_indexes:
+                key        = tuple(cols)
+                col_idxs   = [column_index[c] for c in cols if c in column_index]
+                if len(col_idxs) == len(cols):
+                    self.index_manager.create_composite_index(key)
+                    self.index_manager.rebuild_composite(key, self.rows, col_idxs)
+
+
+
+
     def _validate_schema(self):
-        """
-        Ensure all column types are supported before any operations.
-        Fails fast at table creation rather than at insert time.
-        """
-        for column_name, column_type in self.columns:
-            base = column_type.split("(")[0]
-            if base not in ("int", "bigint", "float", "boolean", "string", "varchar", "char", "decimal", "money",
-                "date", "datetime", "timestamp", "time"):
-                raise ValueError(
-                    f"Unsupported column type '{column_type}' for column '{column_name}'."
-                )
+            """
+            Ensure all column types are supported before any operations.
+            Fails fast at table creation rather than at insert time.
+            """
+            for column_name, column_type in self.columns:
+                base = column_type.split("(")[0]
+                if base not in self.SUPPORTED_TYPES:
+                    raise ValueError(
+                        f"Unsupported column type '{column_type}' for column '{column_name}'."
+                    )
             
 
     def _persist_schema(self):
@@ -94,8 +127,54 @@ class Table:
             self.check_constraints,
             self.auto_increment,
             self.composite_primary_key,
-            self.composite_unique
+            self.composite_unique,
+            hash_indexes=self.hash_indexes,
+            composite_indexes=self.composite_indexes
         )
+
+
+    def create_composite_index(self, column_names: list):
+        col_names = [col[0] for col in self.columns]
+        for col in column_names:
+            if col not in col_names:
+                raise ValueError(f"Column '{col}' does not exist.")
+
+        key = tuple(column_names)
+        self.index_manager.create_composite_index(key)
+
+        column_index = self._build_column_index()
+        col_indexes  = [column_index[col] for col in column_names]
+        self.index_manager.rebuild_composite(key, self.rows, col_indexes)
+
+        if column_names not in self.composite_indexes:
+            self.composite_indexes.append(column_names)
+
+        self._persist_schema()
+        return f"Composite index created on ({', '.join(column_names)})."
+
+
+
+
+    def create_hash_index(self, column_name: str):
+        if column_name not in [col[0] for col in self.columns]:
+            raise ValueError(f"Column '{column_name}' does not exist.")
+
+        self.index_manager.create_hash_index(column_name)
+        column_index = self._build_column_index()
+        self.index_manager.rebuild_hash(column_name, self.rows, column_index[column_name])
+
+        if column_name not in self.hash_indexes:
+            self.hash_indexes.append(column_name)
+
+        self._persist_schema()
+        return f"Hash index created on '{column_name}'."
+
+
+
+
+
+
+
 
     def set_primary_key(self, column_name: str):
         """
@@ -563,7 +642,8 @@ class Table:
         if column_name in [col[0] for col in self.columns]:
             raise ValueError(f"Column '{column_name}' already exists.")
 
-        if column_type not in self.SUPPORTED_TYPES:
+        base = column_type.split("(")[0]
+        if base not in self.SUPPORTED_TYPES:
             raise ValueError(f"Unsupported type '{column_type}'.")
 
         self.columns.append((column_name, column_type))
@@ -575,8 +655,8 @@ class Table:
         new_rows = [list(row) + [default] for row in self.rows]
         self.rows = new_rows
         self.pager.columns = self.columns
-        self.pager.row_size = self.pager._calculate_row_size()
         self.pager.rewrite_all_rows(self.rows)
+        _, self.row_offsets = self.pager.load_all_rows()
         self._persist_schema()
 
 
@@ -607,8 +687,8 @@ class Table:
         new_rows = [list(row[:drop_idx]) + list(row[drop_idx + 1:]) for row in self.rows]
         self.rows = new_rows
         self.pager.columns = self.columns
-        self.pager.row_size = self.pager._calculate_row_size()
         self.pager.rewrite_all_rows(self.rows)
+        _, self.row_offsets = self.pager.load_all_rows()
         self._persist_schema()
 
 
@@ -653,6 +733,7 @@ class Table:
     def truncate(self):
         # wipe all rows from memory and disk, keep schema intact
         self.rows = []
+        self.row_offsets = []
         self.pager.rewrite_all_rows([])
 
         # reset auto increment counter
@@ -781,6 +862,11 @@ class Table:
             if idx < len(row) and row[idx] is None and col_name in self.default_values:
                 row[idx] = self.default_values[col_name]
 
+        if len(row) != len(self.columns):
+            raise ValueError(
+                f"Expected {len(self.columns)} values, got {len(row)}."
+            )
+
         for col_name, col_type in self.columns:
             idx = column_index[col_name]
             if idx < len(row) and row[idx] is not None:
@@ -793,34 +879,14 @@ class Table:
                 elif base == "money" and not isinstance(row[idx], Decimal):
                     row[idx] = Decimal(str(row[idx])).quantize(Decimal("0.01"))
  
-        if len(row) != len(self.columns):
-            raise ValueError(
-                f"Expected {len(self.columns)} values, got {len(row)}."
-            )
- 
         for value, (column_name, column_type) in zip(row, self.columns):
             base_type = column_type.split("(")[0]
-            expected_python_type = {
-                "int":       int,
-                "bigint":    int,
-                "float":     float,
-                "boolean":   bool,
-                "string":    str,
-                "varchar":   str,
-                "char":      str,
-                "decimal": (int, float, Decimal),
-                "money":   (int, float, Decimal),
-                "date":      date,
-                "datetime":  datetime,
-                "timestamp": datetime,
-                "time":      time,
-            }.get(base_type)
-            if expected_python_type and value is not None and not isinstance(value, expected_python_type):
-                raise TypeError(
+            expected_python_type = self.SUPPORTED_TYPES.get(base_type)
+            if expected_python_type and value is not None and not isinstance(value, expected_python_type):       raise TypeError(
                     f"Column '{column_name}' expects type '{column_type}', "
                     f"but got '{type(value).__name__}'."
                 )
- 
+        
         self._validate_not_null(row)
  
         if self.primary_key is not None:
@@ -847,18 +913,32 @@ class Table:
         self._validate_foreign_keys(row, db)
  
         self.rows.append(row)
+        new_offset = os.path.getsize(self.pager.file_path)
+        self.row_offsets.append(new_offset)
         self.pager.append_row(row)
- 
+
         for col in self.index_manager.indexes:
-            self.index_manager.index_row(col, row[column_index[col]], row)
+            if isinstance(col, str):
+                self.index_manager.index_row(col, row[column_index[col]], row)
+
+        for cols in self.composite_indexes:
+            key      = tuple(cols)
+            col_idxs = [column_index[c] for c in cols]
+            val      = tuple(row[i] for i in col_idxs)
+            self.index_manager.indexes[key].insert(val, row)
+
+        for col in self.hash_indexes:
+            self.index_manager.hash_indexes[col].insert(row[column_index[col]], row)
+
+
 
     def select_all(self):
-        """
-        Reload all rows fresh from disk and return them.
-        Useful for debugging or verifying persistence directly.
-        """
-        self.rows = self.pager.load_all_rows()
-        return self.rows
+            """
+            Reload all rows fresh from disk and return them.
+            Useful for debugging or verifying persistence directly.
+            """
+            self.rows, self.row_offsets = self.pager.load_all_rows()
+            return self.rows
 
     def select_where(self, column_name: str, value):
         """
@@ -904,13 +984,6 @@ class Table:
                     raise ValueError(f"Column '{col}' does not exist.")
 
 
-        if selected_columns != ["*"]:
-            for col in selected_columns:
-                bare = col.split(".")[-1]
-
-                if bare not in [c[0] for c in self.columns]:
-                    raise ValueError(f"Column '{col}' does not exist.")
-
         column_index = self._build_column_index()
 
         for condition in conditions:
@@ -935,22 +1008,37 @@ class Table:
         if limit is not None and (not isinstance(limit, int) or limit < 1):
             raise ValueError("LIMIT must be a positive integer.")
 
-        if (
-            len(conditions) == 1
-            and conditions[0].get("type") == "simple"
-            and conditions[0].get("op") == "="
-            and self.index_manager.has_index(
-                conditions[0].get("column").split(".")[-1]
-            )
-        ):
-            col           = conditions[0]["column"].split(".")[-1]
-            val           = conditions[0]["value"]
-            filtered_rows = self.index_manager.search(col, val) or []
-        else:
-            filtered_rows = [
-                row for row in self.rows
-                if self._matches_conditions(row, conditions, column_index)
-            ]
+        # check if all equality conditions match a composite index
+        filtered_rows = None
+
+        if len(conditions) >= 2:
+            eq_cols = {c["column"]: c["value"] for c in conditions
+                       if c.get("type") == "simple" and c.get("op") == "="}
+            for cols in self.composite_indexes:
+                key = tuple(cols)
+                if all(c in eq_cols for c in cols):
+                    val           = tuple(eq_cols[c] for c in cols)
+                    filtered_rows = self.index_manager.indexes[key].search(val) or []
+                    break
+
+        if filtered_rows is None:
+            if (
+                len(conditions) == 1
+                and conditions[0].get("type") == "simple"
+                and conditions[0].get("op") == "="
+            ):
+                col = conditions[0]["column"].split(".")[-1]
+                val = conditions[0]["value"]
+                if self.index_manager.has_hash_index(col):
+                    filtered_rows = self.index_manager.search_hash(col, val) or []
+                elif self.index_manager.has_index(col):
+                    filtered_rows = self.index_manager.search(col, val) or []
+
+            if filtered_rows is None:
+                filtered_rows = [
+                    row for row in self.rows
+                    if self._matches_conditions(row, conditions, column_index)
+                ]
 
         if order_by:
             filtered_rows = list(filtered_rows)
@@ -1082,54 +1170,95 @@ class Table:
 
 
     def delete(self, conditions: list, db=None):
-        """
-        Delete all rows matching ALL conditions.
-        Requires at least one WHERE condition.
-        Rewrites the .db file after deletion via pager.
-        Rebuilds all active B-Tree indexes after rewrite.
-        Triggers ON DELETE CASCADE on child tables if db is provided.
+            """
+            Delete all rows matching ALL conditions.
+            Requires at least one WHERE condition.
+            Writes a tombstone byte in place for each matching row using
+            the stored byte offset for that row.
+            Rebuilds all active indexes after deletion.
+            Triggers ON DELETE CASCADE on child tables if db is provided.
 
-        Returns the number of rows deleted.
-        """
-        if not conditions:
-            raise ValueError(
-                "DELETE requires at least one WHERE condition. "
-                "Full table deletes are not supported yet."
-            )
+            Returns the number of rows deleted.
+            """
+            if not conditions:
+                raise ValueError(
+                    "DELETE requires at least one WHERE condition. "
+                    "Full table deletes are not supported yet."
+                )
+
+            column_index = self._build_column_index()
+
+            for condition in conditions:
+                if condition.get("type") == "simple":
+                    cond_col = condition["column"].split(".")[-1]
+                    if cond_col not in column_index:
+                        raise ValueError(
+                            f"Column '{condition['column']}' does not exist."
+                        )
+
+            surviving_rows    = []
+            surviving_offsets = []
+            deleted_rows      = []
+
+            for row, offset in zip(self.rows, self.row_offsets):
+                if self._matches_conditions(row, conditions, column_index):
+                    self.pager.delete_row_at(offset)
+                    deleted_rows.append(row)
+                else:
+                    surviving_rows.append(row)
+                    surviving_offsets.append(offset)
+
+            deleted_count = len(deleted_rows)
+
+            if deleted_count > 0:
+                self.rows        = surviving_rows
+                self.row_offsets = surviving_offsets
+
+                for col in self.index_manager.indexes:
+                    if isinstance(col, str):
+                        self.index_manager.rebuild(col, self.rows, column_index[col])
+
+                for cols in self.composite_indexes:
+                    key      = tuple(cols)
+                    col_idxs = [column_index[c] for c in cols]
+                    self.index_manager.rebuild_composite(key, self.rows, col_idxs)
+
+                for col in self.hash_indexes:
+                    self.index_manager.rebuild_hash(col, self.rows, column_index[col])
+
+                self._apply_cascade_delete(deleted_rows, db)
+
+            return deleted_count
+
+
+    def compact(self):
+        # rewrite file without tombstoned rows, then resync memory and indexes
+        self.pager.compact()
+        self.rows, self.row_offsets  = self.pager.load_all_rows()
 
         column_index = self._build_column_index()
 
-        for condition in conditions:
-            if condition.get("type") == "simple":
-                cond_col = condition["column"].split(".")[-1]
-
-                if cond_col not in column_index:
-                    raise ValueError(
-                        f"Column '{condition['column']}' does not exist."
-                    )
-
-        surviving_rows = []
-        deleted_rows   = []
-
-        for row in self.rows:
-            if self._matches_conditions(row, conditions, column_index):
-                deleted_rows.append(row)
-            else:
-                surviving_rows.append(row)
-
-        deleted_count = len(deleted_rows)
-
-        if deleted_count > 0:
-            self.rows = surviving_rows
-            self.pager.rewrite_all_rows(surviving_rows)
-
-            for col in self.index_manager.indexes:
+        for col in self.index_manager.indexes:
+            if isinstance(col, str):
                 self.index_manager.rebuild(col, self.rows, column_index[col])
 
-            # Trigger CASCADE deletes in child tables
-            self._apply_cascade_delete(deleted_rows, db)
+        for cols in self.composite_indexes:
+            key      = tuple(cols)
+            col_idxs = [column_index[c] for c in cols]
+            self.index_manager.rebuild_composite(key, self.rows, col_idxs)
 
-        return deleted_count
+        for col in self.hash_indexes:
+            self.index_manager.rebuild_hash(col, self.rows, column_index[col])
+
+
+
+
+
+
+
+
+
+
 
     def update(self, assignments: list, conditions: list, db=None):
         """
@@ -1166,21 +1295,7 @@ class Table:
  
             column_type = column_types[col]
             base_type = column_type.split("(")[0]
-            expected_python_type = {
-                    "int":       int,
-                    "bigint":    int,
-                    "float":     float,
-                    "boolean":   bool,
-                    "string":    str,
-                    "varchar":   str,
-                    "char":      str,
-                    "decimal": (int, float, Decimal),
-                    "money":   (int, float, Decimal),
-                    "date":      date,
-                    "datetime":  datetime,
-                    "timestamp": datetime,
-                    "time":      time,
-                }.get(base_type)
+            expected_python_type = self.SUPPORTED_TYPES.get(base_type)
             if expected_python_type and value is not None and not isinstance(value, expected_python_type):
                 raise TypeError(
                     f"Column '{col}' expects type '{column_type}', "
@@ -1227,15 +1342,15 @@ class Table:
 
                 for col_name, col_type in self.columns:
                     idx = column_index[col_name]
-                    if idx < len(row) and row[idx] is not None:
+                    if idx < len(new_row) and new_row[idx] is not None:
                         base = col_type.split("(")[0]
-                        if base == "decimal" and not isinstance(row[idx], Decimal):
+                        if base == "decimal" and not isinstance(new_row[idx], Decimal):
                            
                             scale = int(col_type[col_type.index(",")+1:col_type.index(")")])
                             quantizer = Decimal(10) ** -scale
-                            row[idx] = Decimal(str(row[idx])).quantize(quantizer)
-                        elif base == "money" and not isinstance(row[idx], Decimal):
-                            row[idx] = Decimal(str(row[idx])).quantize(Decimal("0.01"))
+                            new_row[idx] = Decimal(str(new_row[idx])).quantize(quantizer)
+                        elif base == "money" and not isinstance(new_row[idx], Decimal):
+                            new_row[idx] = Decimal(str(new_row[idx])).quantize(Decimal("0.01"))
  
                 self._validate_composite_unique(new_row, exclude_row=row)
                 self._validate_check_constraints(new_row)
@@ -1250,10 +1365,21 @@ class Table:
         if updated_count > 0:
             self.rows = updated_rows
             self.pager.rewrite_all_rows(updated_rows)
+            _, self.row_offsets = self.pager.load_all_rows()
+
  
             for col in self.index_manager.indexes:
-                self.index_manager.rebuild(col, self.rows, column_index[col])
- 
+                if isinstance(col, str):
+                    self.index_manager.rebuild(col, self.rows, column_index[col])
+
+            for cols in self.composite_indexes:
+                key      = tuple(cols)
+                col_idxs = [column_index[c] for c in cols]
+                self.index_manager.rebuild_composite(key, self.rows, col_idxs)
+           
+            for col in self.hash_indexes:
+                self.index_manager.rebuild_hash(col, self.rows, column_index[col])
+
             # Trigger CASCADE updates in child tables
             self._apply_cascade_update(old_rows, updated_rows[:updated_count], db)
  

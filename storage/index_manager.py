@@ -1,5 +1,5 @@
 from .btree import BTree
-
+from .hash_index import HashIndex
 
 class IndexManager:
     """
@@ -10,7 +10,8 @@ class IndexManager:
     """
 
     def __init__(self):
-        self.indexes = {}
+        self.indexes      = {}
+        self.hash_indexes = {}
 
     def create_index(self, column_name: str):
         """
@@ -60,3 +61,37 @@ class IndexManager:
 
         for row in rows:
             self.indexes[column_name].insert(row[col_idx], row)
+
+
+    def create_composite_index(self, cols: tuple):
+        # cols is a tuple of column names, used as the index key
+        if cols in self.indexes:
+            raise ValueError(f"Composite index on {cols} already exists.")
+        self.indexes[cols] = BTree()
+
+    def has_composite_index(self, cols: tuple) -> bool:
+        return cols in self.indexes
+
+    def rebuild_composite(self, cols: tuple, rows: list, col_indexes: list):
+        # rebuilds composite index from scratch, col_indexes is list of int positions
+        self.indexes[cols] = BTree()
+        for row in rows:
+            key = tuple(row[i] for i in col_indexes)
+            self.indexes[cols].insert(key, row)
+
+    def create_hash_index(self, column_name: str):
+        if column_name in self.hash_indexes:
+            raise ValueError(f"Hash index on '{column_name}' already exists.")
+        self.hash_indexes[column_name] = HashIndex()
+
+    def has_hash_index(self, column_name: str) -> bool:
+        return column_name in self.hash_indexes
+
+    def search_hash(self, column_name: str, key) -> list:
+        if column_name not in self.hash_indexes:
+            return None
+        return self.hash_indexes[column_name].search(key)
+
+    def rebuild_hash(self, column_name: str, rows: list, col_idx: int):
+        self.hash_indexes[column_name] = HashIndex()
+        self.hash_indexes[column_name].rebuild(rows, col_idx)

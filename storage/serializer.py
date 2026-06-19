@@ -1,6 +1,6 @@
 import struct
 from datetime import date, datetime, time, timedelta 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 class Serializer:
     STRING_SIZE = 255
@@ -77,6 +77,12 @@ class Serializer:
                     result += b"\x00" + b"\x00" * 8
                 elif column_type == "time":
                     result += b"\x00" + b"\x00" * 4
+
+                elif column_type in ("text", "json", "xml"):
+                    result += b"\x00" + (0).to_bytes(4, byteorder="big")
+
+                elif column_type == "blob":
+                    result += b"\x00" + (0).to_bytes(4, byteorder="big")
                
                 continue
 
@@ -149,6 +155,19 @@ class Serializer:
                 seconds = value.hour * 3600 + value.minute * 60 + value.second
                 result += seconds.to_bytes(4, byteorder="big", signed=True)
 
+            elif column_type in ("text", "json", "xml"):
+                encoded = value.encode("utf-8")
+                length_prefix = len(encoded).to_bytes(4, byteorder="big")
+                result += length_prefix + encoded
+
+            elif column_type == "blob":
+                if not isinstance(value, bytes):
+                    raise TypeError("BLOB value must be bytes.")
+                length_prefix = len(value).to_bytes(4, byteorder="big")
+                result += length_prefix + value
+
+
+
         return result
 
     @staticmethod
@@ -191,6 +210,15 @@ class Serializer:
                     offset += 8
                 elif column_type == "time":
                     offset += 4
+
+
+                elif column_type in ("text", "json", "xml"):
+                    length = int.from_bytes(data[offset:offset + 4], "big")
+                    offset += 4 + length
+
+                elif column_type == "blob":
+                    length = int.from_bytes(data[offset:offset + 4], "big")
+                    offset += 4 + length
                             
                 row.append(None)
                 continue           
@@ -277,4 +305,19 @@ class Serializer:
                 row.append(time(seconds // 3600, (seconds % 3600) // 60, seconds % 60))
                 offset += 4
 
+            elif column_type in ("text", "json", "xml"):
+                length = int.from_bytes(data[offset:offset + 4], "big")
+                offset += 4
+                value = data[offset:offset + length].decode("utf-8")
+                row.append(value)
+                offset += length
+
+            elif column_type == "blob":
+                length = int.from_bytes(data[offset:offset + 4], "big")
+                offset += 4
+                value = bytes(data[offset:offset + length])
+                row.append(value)
+                offset += length
+
+ 
         return row

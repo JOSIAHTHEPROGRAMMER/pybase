@@ -7,8 +7,9 @@ from PyQt6.QtCore import Qt
 from gui.widgets.font import get_mono_font
 
 from cli import (
-     parse_alter_table, parse_truncate, parse_rename_table, parse_create_view, parse_drop_view, parse_explain,
-     parse_create_table, parse_insert, parse_select,
+    parse_alter_table, parse_truncate, parse_compact_table, parse_rename_table,
+    parse_create_view, parse_drop_view, parse_explain,
+    parse_create_table, parse_insert, parse_select,
     parse_delete, parse_update, parse_create_index,
     parse_drop_table, _detect_set_operator, resolve_subqueries
 )
@@ -337,12 +338,25 @@ class EditorPanel(QWidget):
                 self.on_transaction_change()
                 self.on_result([], [], "Transaction rolled back.")
 
+
+
+            elif cmd_upper.startswith("CREATE HASH INDEX"):
+                table_name, column_name = parse_create_index(command)
+                table = self.db.get_table(table_name)
+                if isinstance(column_name, list):
+                    raise ValueError("Hash index does not support multiple columns.")
+                msg = table.create_hash_index(column_name)
+                self.on_schema_change()
+                self.on_result([], [], msg)
+
             elif cmd_upper.startswith("CREATE INDEX"):
                 table_name, column_name = parse_create_index(command)
                 table = self.db.get_table(table_name)
-                msg = table.create_index(column_name)
-                self.on_schema_change()
-                self.on_result([], [], msg)
+                if isinstance(column_name, list):
+                    msg = table.create_composite_index(column_name)
+                else:
+                    msg = table.create_index(column_name)
+                print(msg)
 
             elif cmd_upper.startswith("CREATE TABLE"):
                 (table_name, columns, unique_columns, primary_key,
@@ -410,6 +424,12 @@ class EditorPanel(QWidget):
                 self.db.get_table(table_name).truncate()
                 self.on_schema_change()
                 self.on_result([], [], f"Table '{table_name}' truncated.")
+
+            
+            elif cmd_upper.startswith("COMPACT TABLE"):
+                table_name = parse_compact_table(command)
+                self.db.get_table(table_name).compact()
+                self.on_result([], [], f"Table '{table_name}' compacted.")
 
             elif cmd_upper.startswith("RENAME TABLE"):
                 old_name, new_name = parse_rename_table(command)

@@ -19,7 +19,7 @@ class SchemaPanel(QWidget):
         super().__init__()
         self.db = db
         # Removed setFixedWidth - panel is now freely resizable via splitter
-        self.setMinimumWidth(180)
+        self.setMinimumWidth(200)
         self._build_ui()
         self.refresh()
 

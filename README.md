@@ -1,4 +1,5 @@
 # PyBase
+
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
 ![Coverage](https://img.shields.io/badge/Coverage-50%25%20Required-brightgreen)
@@ -6,7 +7,7 @@
 ![GUI](https://img.shields.io/badge/GUI-PyQt6-41CD52?style=flat&logo=qt&logoColor=white)
 ![Storage](https://img.shields.io/badge/Storage-Binary%20%2B%20JSON-orange?style=flat)
 
-PyBase is a minimal relational database engine built from scratch in Python, without any external libraries except PyQt6 and matplotlib for the GUI. It implements real database internals: custom binary storage, B-Tree indexing, schema persistence, a full constraint system, transactions with savepoints, a complete query system with joins and subqueries, DDL operations, and views.
+PyBase is a minimal relational database engine built from scratch in Python, without any external libraries except PyQt6 and matplotlib for the GUI. It implements real database internals: custom variable length binary storage with tombstone deletes, B-Tree and hash indexing, schema persistence, a full constraint system, transactions with savepoints, a complete query system with joins and subqueries, DDL operations, and views.
 
 ## Preview
 
@@ -16,7 +17,11 @@ PyBase is a minimal relational database engine built from scratch in Python, wit
 
 **Core Engine**
 
-Full CRUD with `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TABLE`, and `DROP DATABASE`. SQL-like syntax with case-insensitive keywords and all column names normalised to lowercase. Rows are stored in binary `.db` files and schemas in `.schema` JSON files. B-Tree indexing via `CREATE INDEX` gives O(log n) equality lookups, auto-maintained on insert, update, and delete. Multi-statement scripts separated by semicolons are supported.
+Full CRUD with `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TABLE`, and `DROP DATABASE`. SQL-like syntax with case-insensitive keywords and all column names normalised to lowercase. Rows are stored in binary `.db` files using a variable length tombstone format, and schemas in `.schema` JSON files. B-Tree indexing via `CREATE INDEX` gives O(log n) equality lookups, auto-maintained on insert, update, and delete. Hash indexing via `CREATE HASH INDEX` gives O(1) equality lookups. Composite indexes are supported across multiple columns. Multi-statement scripts separated by semicolons are supported.
+
+**Storage Engine**
+
+Rows are stored with a one byte tombstone flag and a four byte length prefix, allowing variable length data like `TEXT` and `BLOB` to live alongside fixed width types in the same file. Deletes write a tombstone byte in place rather than rewriting the whole file, making deletes a constant time operation regardless of table size. `COMPACT TABLE` reclaims space from tombstoned rows by rewriting the file with only live rows. In memory row offsets are tracked so deletes always target the exact byte position of a row without a full file scan.
 
 **Constraints**
 
@@ -34,7 +39,8 @@ Full CRUD with `CREATE TABLE`, `INSERT`, `SELECT`, `UPDATE`, `DELETE`, `DROP TAB
 - Aggregate functions - `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`
 - Set operations - `UNION`, `UNION ALL`, `INTERSECT`, `EXCEPT`
 - Subqueries - in `WHERE` with `IN`, `EXISTS`, `ANY`, `ALL`
-- B-Tree index used automatically for single equality conditions on indexed columns
+- B-Tree and hash index used automatically for single equality conditions on indexed columns
+- Composite index used automatically when all equality conditions match the indexed columns
 - Rich WHERE clauses:
   - Comparison: `=`, `!=`, `<>`, `>`, `>=`, `<`, `<=`
   - Logical: `AND`, `OR`, `NOT`
@@ -97,33 +103,41 @@ pybase/
 │       ├── history.py      # Query history dropdown with persistence
 │       └── status_bar.py   # Transaction status indicator
 ├── query/
-│   └── expression.py       # Full expression evaluator - comparisons, logical, arithmetic, bitwise, subqueries
+│   ├── expression.py       # Full expression evaluator - comparisons, logical, arithmetic, bitwise, subqueries
+│   ├── planner.py          # Join planning for INNER, LEFT, RIGHT, FULL OUTER, CROSS, SELF joins
+│   ├── executor.py         # Executes the join plan and produces result rows
+│   └── utils.py            # Shared query helpers, aggregate detection
 ├── storage/
 │   ├── btree.py            # B-Tree and BTreeNode data structures
-│   ├── index_manager.py    # Owns and manages B-Tree indexes per table
-│   ├── pager.py            # Binary row file read/write with NULL flag bytes per column
+│   ├── hash_index.py       # Hash index for O(1) equality lookups
+│   ├── index_manager.py    # Owns and manages B-Tree, hash, and composite indexes per table
+│   ├── pager.py            # Variable length row file read/write with tombstone deletes and compaction
 │   ├── schema_manager.py   # JSON schema persistence per table
-│   └── serializer.py       # Row serialization to/from fixed-width bytes
+│   └── serializer.py       # Row serialization to/from variable length binary
 ├── tests/
-│   └── phase_1_test.py     # Comprehensive Phase 1 test suite (64 tests)
+│   ├── phase_1_test.py     # Comprehensive Phase 1 test suite (64 tests)
+│   └── phase_2_test.py     # Phase 2 test suite - tombstone deletes, TEXT/BLOB/JSON/XML, compaction
 └── cli.py                  # SQL parser, dispatcher, and REPL entry point
 ```
 
 **Layer Responsibilities**
 
-| Layer                       | Responsibility                                                |
-| --------------------------- | ------------------------------------------------------------- |
-| `cli.py`                    | Parse SQL strings, dispatch to database, print results        |
-| `core/database.py`          | Own all tables, manage transactions, reload tables on startup |
-| `core/table.py`             | Validate and execute all row operations, enforce constraints  |
-| `core/transaction.py`       | Two-phase atomic commit, buffer operations, savepoints        |
-| `query/expression.py`       | Evaluate WHERE expressions including subquery types           |
-| `storage/pager.py`          | Append rows to disk, rewrite file after delete/update         |
-| `storage/serializer.py`     | Convert rows to fixed-width binary and back                   |
-| `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                 |
-| `storage/btree.py`          | Sorted key-value tree with O(log n) search                    |
-| `storage/index_manager.py`  | Create, rebuild, and query B-Tree indexes                     |
-| `gui/`                      | PyQt6 desktop interface - editor, results, charts, ER diagram |
+| Layer                       | Responsibility                                                 |
+| --------------------------- | -------------------------------------------------------------- |
+| `cli.py`                    | Parse SQL strings, dispatch to database, print results         |
+| `core/database.py`          | Own all tables, manage transactions, reload tables on startup  |
+| `core/table.py`             | Validate and execute all row operations, enforce constraints   |
+| `core/transaction.py`       | Two-phase atomic commit, buffer operations, savepoints         |
+| `query/expression.py`       | Evaluate WHERE expressions including subquery types            |
+| `query/planner.py`          | Build join plans for all supported join types                  |
+| `query/executor.py`         | Execute join plans and produce result rows                     |
+| `storage/pager.py`          | Append, tombstone, and compact variable length rows on disk    |
+| `storage/serializer.py`     | Convert rows to variable length binary and back                |
+| `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                  |
+| `storage/btree.py`          | Sorted key-value tree with O(log n) search                     |
+| `storage/hash_index.py`     | Hash based index with O(1) equality search                     |
+| `storage/index_manager.py`  | Create, rebuild, and query B-Tree, hash, and composite indexes |
+| `gui/`                      | PyQt6 desktop interface - editor, results, charts, ER diagram  |
 
 ---
 
@@ -158,6 +172,7 @@ Run the tests:
 ```bash
 cd pybase
 pytest tests/phase_1_test.py -v -s
+pytest tests/phase_2_test.py -v -s
 ```
 
 ## Supported SQL Syntax
@@ -174,11 +189,21 @@ CREATE TABLE employees (
     dept_id int REFERENCES departments(id) ON DELETE CASCADE ON UPDATE CASCADE
 );
 
+CREATE TABLE documents (
+    id int PRIMARY KEY,
+    title string,
+    body text,
+    thumbnail blob,
+    settings json,
+    manifest xml
+);
+
 ALTER TABLE employees ADD COLUMN bonus int DEFAULT 0;
 ALTER TABLE employees DROP COLUMN bonus;
 ALTER TABLE employees RENAME COLUMN salary TO pay;
 
 TRUNCATE TABLE employees;
+COMPACT TABLE employees;
 
 RENAME TABLE employees TO staff;
 
@@ -191,12 +216,15 @@ EXPLAIN SELECT dept_id, COUNT(*) FROM employees GROUP BY dept_id;
 
 DROP TABLE users;
 CREATE INDEX ON users (id);
+CREATE HASH INDEX ON users (id);
+CREATE INDEX ON employees (dept_id, salary);
 ```
 
 **DML**
 
 ```sql
 INSERT INTO users VALUES (1, 'Alice');
+INSERT INTO documents VALUES (1, 'Notes', 'A long body of text with no length limit.', x'48656c6c6f', '{"theme": "dark"}', '<root><item>1</item></root>');
 
 SELECT * FROM users;
 SELECT DISTINCT dept_id FROM employees;
@@ -257,13 +285,41 @@ COMMIT;
 
 ## Data Types
 
-| Type      | Python equivalent | Storage size            |
-| --------- | ----------------- | ----------------------- |
-| `int`     | `int`             | 4 bytes signed          |
-| `bigint`  | `int`             | 8 bytes signed          |
-| `float`   | `float`           | 8 bytes IEEE 754 double |
-| `boolean` | `bool`            | 1 byte                  |
-| `string`  | `str`             | 256 bytes fixed width   |
+| Type           | Python equivalent        | Storage size                          |
+| -------------- | ------------------------ | ------------------------------------- |
+| `int`          | `int`                    | 4 bytes signed                        |
+| `bigint`       | `int`                    | 8 bytes signed                        |
+| `float`        | `float`                  | 8 bytes IEEE 754 double               |
+| `boolean`      | `bool`                   | 1 byte                                |
+| `string`       | `str`                    | 256 bytes fixed width                 |
+| `varchar(n)`   | `str`                    | n bytes fixed width                   |
+| `char(n)`      | `str`                    | n bytes fixed width                   |
+| `decimal(p,s)` | `Decimal`                | 8 bytes scaled int64                  |
+| `money`        | `Decimal`                | 8 bytes scaled int64                  |
+| `date`         | `date`                   | 4 bytes signed                        |
+| `datetime`     | `datetime`               | 8 bytes signed                        |
+| `timestamp`    | `datetime`               | 8 bytes signed                        |
+| `time`         | `time`                   | 4 bytes signed                        |
+| `text`         | `str`                    | variable length, 4 byte length prefix |
+| `blob`         | `bytes`                  | variable length, 4 byte length prefix |
+| `json`         | `str`, validated as JSON | variable length, 4 byte length prefix |
+| `xml`          | `str`, validated as XML  | variable length, 4 byte length prefix |
+
+`BLOB` values are entered in SQL using hex literal syntax, for example `x'48656c6c6f'`. `JSON` and `XML` columns are validated for well formed content on insert and update, and rejected with an error if the content does not parse.
+
+---
+
+## Storage Format
+
+Every row on disk has this structure:
+
+- 1 byte tombstone flag, `0x00` for alive and `0xFF` for deleted
+- 4 byte big endian length prefix for the row content
+- the row content itself, produced by the serializer
+
+Each column inside the row content has a 1 byte null flag followed by its value bytes. Fixed width types like `int` and `boolean` always occupy the same number of bytes. Variable length types like `text`, `blob`, `json`, and `xml` are stored with their own 4 byte length prefix inside the row content, allowing a single row to mix fixed and variable width columns freely.
+
+Deletes write the tombstone byte in place at the row's stored offset, which is a constant time operation regardless of table size. `COMPACT TABLE` reclaims space by rewriting the file with only the rows that are still alive.
 
 ---
 
@@ -281,6 +337,8 @@ COMMIT;
 | `FOREIGN KEY`           | Value must exist in referenced table, enforced on insert, update, and commit |
 | `ON DELETE CASCADE`     | Child rows deleted automatically when parent is deleted                      |
 | `ON UPDATE CASCADE`     | Child FK values updated automatically when parent PK changes                 |
+| `JSON` validity         | Value must parse as well formed JSON                                         |
+| `XML` validity          | Value must parse as well formed XML                                          |
 | Duplicate rows          | Exact duplicate rows always rejected                                         |
 
 ---
@@ -291,10 +349,10 @@ Each table produces two files in the `data/` directory:
 
 | File                | Contents                                                                          |
 | ------------------- | --------------------------------------------------------------------------------- |
-| `table_name.db`     | Fixed-width binary row data                                                       |
+| `table_name.db`     | Variable length binary row data with tombstone flags                              |
 | `table_name.schema` | JSON - columns, types, constraints, indexes, foreign keys, auto increment counter |
 
-On startup the database scans `data/` for `.schema` files and reloads all tables automatically, rebuilding B-Tree indexes and restoring all constraint definitions.
+On startup the database scans `data/` for `.schema` files and reloads all tables automatically, rebuilding B-Tree, hash, and composite indexes and restoring all constraint definitions. Row byte offsets are rebuilt in memory on load so deletes can target exact row positions without a full file scan.
 
 ---
 

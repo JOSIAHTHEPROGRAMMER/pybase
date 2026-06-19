@@ -43,7 +43,7 @@ class SchemaManager:
               indexes=None, foreign_keys=None, not_null_columns=None,
               default_values=None, check_constraints=None,
               auto_increment=None, composite_primary_key=None,
-              composite_unique=None):
+              composite_unique=None, composite_indexes=None,  hash_indexes=None):
         """
         Persist full schema to disk.
         All constraint fields are optional and default to empty.
@@ -52,6 +52,7 @@ class SchemaManager:
             "columns":               [list(col) for col in columns],
             "unique_columns":        list(unique_columns),
             "primary_key":           primary_key,
+            "composite_indexes":     composite_indexes or [],
             "composite_primary_key": composite_primary_key or [],
             "indexes":               indexes or [],
             "foreign_keys":          foreign_keys or [],
@@ -60,6 +61,7 @@ class SchemaManager:
             "check_constraints":     check_constraints or [],
             "composite_unique":      composite_unique or [],
             "auto_increment":        auto_increment or None,
+            "hash_indexes": hash_indexes or [],
         }
         with open(self.schema_path, "w") as f:
             json.dump(schema, f, indent=2)

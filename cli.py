@@ -222,6 +222,11 @@ def _parse_single_condition(part: str) -> dict:
 def _parse_value(val: str):
     val = val.strip()
 
+
+    if (val[:2].upper() == "X'" and val.endswith("'")) or (val[:2].upper() == "X\"" and val.endswith('"')):
+        hex_str = val[2:-1]
+        return bytes.fromhex(hex_str)
+
     if val.startswith('"') and val.endswith('"'):
         return val[1:-1]
 
@@ -471,10 +476,48 @@ def parse_insert(command: str):
     values_part = rest[values_idx + 6:].strip().strip("()").strip()
 
     row = []
-    for val in values_part.split(","):
+    for val in _split_values(values_part):
         val = val.strip()
         row.append(_parse_value(val))
     return table_name, row
+
+
+def _split_values(values_part: str) -> list:
+    """
+    Split a VALUES list on commas while respecting quoted strings.
+    Commas inside single or double quotes are not treated as separators.
+    """
+    parts   = []
+    current = ""
+    i       = 0
+
+    while i < len(values_part):
+        char = values_part[i]
+
+        if char in ("'", '"'):
+            quote = char
+            current += char
+            i += 1
+            while i < len(values_part) and values_part[i] != quote:
+                current += values_part[i]
+                i += 1
+            if i < len(values_part):
+                current += values_part[i]
+                i += 1
+
+        elif char == ",":
+            parts.append(current.strip())
+            current = ""
+            i += 1
+
+        else:
+            current += char
+            i += 1
+
+    if current.strip():
+        parts.append(current.strip())
+
+    return parts
 
 def _detect_set_operator(command: str):
             depth = 0
@@ -728,7 +771,7 @@ def parse_update(command: str):
     where_part = set_rest[where_idx + 5:]
 
     assignments = []
-    for assignment in set_part.split(","):
+    for assignment in _split_values(set_part):
         col, _, value = assignment.partition("=")
         col   = col.strip().lower()
         value = _parse_value(value.strip())
@@ -744,14 +787,16 @@ def parse_create_index(command: str):
     Parse a CREATE INDEX command.
     Returns table name and column name to index.
     """
-    command  = command.strip().rstrip(";")
-    on_idx   = command.upper().index("ON")
-    rest     = command[on_idx + 2:].strip()
+    command   = command.strip().rstrip(";")
+    on_idx    = command.upper().index("ON")
+    rest      = command[on_idx + 2:].strip()
     paren_idx = rest.index("(")
     table_name   = rest[:paren_idx].strip()
-    column_name  = rest[paren_idx:].strip("() ").strip().lower()
-
-    return table_name, column_name
+    cols_part    = rest[paren_idx:].strip("() ").strip()
+    column_names = [c.strip().lower() for c in cols_part.split(",")]
+    if len(column_names) == 1:
+        return table_name, column_names[0]
+    return table_name, column_names
 
 
 
@@ -827,6 +872,13 @@ def parse_truncate(command: str) -> str:
     upper   = command.upper()
     if "TABLE" not in upper:
         raise ValueError("TRUNCATE requires TABLE keyword.")
+    return command[upper.index("TABLE") + 5:].strip()
+
+def parse_compact_table(command: str) -> str:
+    command = command.strip().rstrip(";")
+    upper   = command.upper()
+    if "TABLE" not in upper:
+        raise ValueError("COMPACT TABLE requires TABLE keyword.")
     return command[upper.index("TABLE") + 5:].strip()
 
 
@@ -923,10 +975,23 @@ def main():
                 db.rollback_transaction()
                 print("Transaction rolled back.")
 
+
+            elif cmd_upper.startswith("CREATE HASH INDEX"):
+                table_name, column_name = parse_create_index(command)
+                table = db.get_table(table_name)
+                if isinstance(column_name, list):
+                    raise ValueError("Hash index does not support multiple columns.")
+                print(table.create_hash_index(column_name))
+
             elif cmd_upper.startswith("CREATE INDEX"):
                 table_name, column_name = parse_create_index(command)
                 table = db.get_table(table_name)
-                print(table.create_index(column_name))
+                if isinstance(column_name, list):
+                    msg = table.create_composite_index(column_name)
+                else:
+                    msg = table.create_index(column_name)
+                print(msg)
+
 
             elif cmd_upper.startswith("CREATE TABLE"):
                 (table_name, columns, unique_columns, primary_key,
@@ -1128,6 +1193,12 @@ def main():
                 table_name = parse_truncate(command)
                 db.get_table(table_name).truncate()
                 print(f"Table '{table_name}' truncated.")
+
+
+            elif cmd_upper.startswith("COMPACT TABLE"):
+                table_name = parse_compact_table(command)
+                db.get_table(table_name).compact()
+                print(f"Table '{table_name}' compacted.")
 
             elif cmd_upper.startswith("RENAME TABLE"):
                 old_name, new_name = parse_rename_table(command)

@@ -40,9 +40,9 @@ class SQLHighlighter(QSyntaxHighlighter):
         "COUNT", "SUM", "AVG", "MIN", "MAX",
 
         "ALTER", "ADD", "COLUMN", "RENAME", "TRUNCATE", "VIEW", "EXPLAIN", "TO",
-
+        "COMPACT",
         # Joins
-        "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "ON",
+        "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "ON","HASH",
     ]
 
     TYPES = ["INT", "BIGINT", "FLOAT", "BOOLEAN", "BOOL", "STRING"]

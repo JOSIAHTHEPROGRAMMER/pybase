@@ -111,7 +111,8 @@ pybase/
 │   ├── btree.py            # B-Tree and BTreeNode data structures
 │   ├── hash_index.py       # Hash index for O(1) equality lookups
 │   ├── index_manager.py    # Owns and manages B-Tree, hash, and composite indexes per table
-│   ├── pager.py            # Variable length row file read/write with tombstone deletes and compaction
+│   ├── page.py             # Low-level page abstraction and page layout helpers
+│   ├── pager.py            # Variable length row file read/write with tombstone deletes, compaction, and WAL handling
 │   ├── schema_manager.py   # JSON schema persistence per table
 │   └── serializer.py       # Row serialization to/from variable length binary
 ├── tests/
@@ -131,7 +132,8 @@ pybase/
 | `query/expression.py`       | Evaluate WHERE expressions including subquery types            |
 | `query/planner.py`          | Build join plans for all supported join types                  |
 | `query/executor.py`         | Execute join plans and produce result rows                     |
-| `storage/pager.py`          | Append, tombstone, and compact variable length rows on disk    |
+| `storage/page.py`           | Define page-level storage layout and page helpers              |
+| `storage/pager.py`          | Append, tombstone, compact rows on disk, and manage WAL state  |
 | `storage/serializer.py`     | Convert rows to variable length binary and back                |
 | `storage/schema_manager.py` | Write and read per-table `.schema` JSON files                  |
 | `storage/btree.py`          | Sorted key-value tree with O(log n) search                     |
@@ -345,12 +347,13 @@ Deletes write the tombstone byte in place at the row's stored offset, which is a
 
 ## Persistence
 
-Each table produces two primary files in the `data/` directory. In addition, PyBase maintains a write-ahead log (WAL) per table (`table_name.wal`) which records pending changes for durability and crash recovery; the WAL is replayed on startup before schemas are loaded.
+Each table produces a data file, a schema file, and a write-ahead log (WAL) in the `data/` directory. The WAL records pending changes for durability and crash recovery; it is replayed on startup before schemas are loaded.
 
 | File                | Contents                                                                          |
 | ------------------- | --------------------------------------------------------------------------------- |
 | `table_name.db`     | Variable length binary row data with tombstone flags                              |
 | `table_name.schema` | JSON - columns, types, constraints, indexes, foreign keys, auto increment counter |
+| `table_name.wal`    | Append-only log of transactional changes for recovery and replay                  |
 
 On startup the database scans `data/` for `.schema` files and reloads all tables automatically, rebuilding B-Tree, hash, and composite indexes and restoring all constraint definitions. Row byte offsets are rebuilt in memory on load so deletes can target exact row positions without a full file scan.
 

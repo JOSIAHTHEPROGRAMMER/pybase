@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat)
-![Coverage](https://img.shields.io/badge/Coverage-50%25%20Required-brightgreen)
+![Coverage](https://img.shields.io/badge/Coverage-60%25%20Required-brightgreen)
 [![Build and Test](https://github.com/JOSIAHTHEPROGRAMMER/pybase/actions/workflows/tests.yml/badge.svg)](https://github.com/JOSIAHTHEPROGRAMMER/pybase/actions/workflows/tests.yml)
 ![GUI](https://img.shields.io/badge/GUI-PyQt6-41CD52?style=flat&logo=qt&logoColor=white)
 ![Storage](https://img.shields.io/badge/Storage-Binary%20%2B%20JSON-orange?style=flat)
@@ -345,7 +345,7 @@ Deletes write the tombstone byte in place at the row's stored offset, which is a
 
 ## Persistence
 
-Each table produces two files in the `data/` directory:
+Each table produces two primary files in the `data/` directory. In addition, PyBase maintains a write-ahead log (WAL) per table (`table_name.wal`) which records pending changes for durability and crash recovery; the WAL is replayed on startup before schemas are loaded.
 
 | File                | Contents                                                                          |
 | ------------------- | --------------------------------------------------------------------------------- |

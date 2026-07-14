@@ -753,17 +753,29 @@ class Table:
         
         old_db_path     = self.pager.file_path
         old_schema_path = self.schema_manager.schema_path
+        old_idx_path    = self.pager.idx_path
+        old_wal_path    = self.pager.wal_path
 
         new_db_path     = os.path.join(self.folder, f"{new_name}.db")
         new_schema_path = os.path.join(self.folder, f"{new_name}.schema")
+        new_idx_path    = os.path.join(self.folder, f"{new_name}.idx")
+        new_wal_path    = os.path.join(self.folder, f"{new_name}.wal")
 
         os.rename(old_db_path, new_db_path)
         os.rename(old_schema_path, new_schema_path)
+
+        if os.path.exists(old_idx_path):
+            os.rename(old_idx_path, new_idx_path)
+
+        if os.path.exists(old_wal_path):
+            os.rename(old_wal_path, new_wal_path)
 
         # update in-memory references
         self.name = new_name
         self.pager.table_name = new_name
         self.pager.file_path  = new_db_path
+        self.pager.idx_path   = new_idx_path
+        self.pager.wal_path   = new_wal_path
         self.schema_manager.table_name  = new_name
         self.schema_manager.schema_path = new_schema_path
 
@@ -886,6 +898,21 @@ class Table:
                     f"Column '{column_name}' expects type '{column_type}', "
                     f"but got '{type(value).__name__}'."
                 )
+            if value is not None and base_type == "json":
+                try:
+                    json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    raise ValueError(
+                        f"Column '{column_name}' expects valid JSON, got {value!r}."
+                    )
+
+            if value is not None and base_type == "xml":
+                try:
+                    ET.fromstring(value)
+                except ET.ParseError:
+                    raise ValueError(
+                        f"Column '{column_name}' expects valid XML, got {value!r}."
+                    )
         
         self._validate_not_null(row)
  
@@ -913,9 +940,8 @@ class Table:
         self._validate_foreign_keys(row, db)
  
         self.rows.append(row)
-        new_offset = os.path.getsize(self.pager.file_path)
-        self.row_offsets.append(new_offset)
-        self.pager.append_row(row)
+        page_num, slot_offset = self.pager.append_row(row)
+        self.row_offsets.append((page_num, slot_offset))
 
         for col in self.index_manager.indexes:
             if isinstance(col, str):
@@ -1200,13 +1226,13 @@ class Table:
             surviving_offsets = []
             deleted_rows      = []
 
-            for row, offset in zip(self.rows, self.row_offsets):
+            for row, slot  in zip(self.rows, self.row_offsets):
                 if self._matches_conditions(row, conditions, column_index):
-                    self.pager.delete_row_at(offset)
+                    self.pager.delete_row_at(slot[0], slot[1])
                     deleted_rows.append(row)
                 else:
                     surviving_rows.append(row)
-                    surviving_offsets.append(offset)
+                    surviving_offsets.append(slot)
 
             deleted_count = len(deleted_rows)
 
@@ -1301,6 +1327,21 @@ class Table:
                     f"Column '{col}' expects type '{column_type}', "
                     f"but got '{type(value).__name__}'."
                 )
+            if value is not None and base_type == "json":
+                try:
+                    json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    raise ValueError(
+                        f"Column '{col}' expects valid JSON, got {value!r}."
+                    )
+
+            if value is not None and base_type == "xml":
+                try:
+                    ET.fromstring(value)
+                except ET.ParseError:
+                    raise ValueError(
+                        f"Column '{col}' expects valid XML, got {value!r}."
+                    )
  
             if col == self.primary_key and value is None:
                 raise ValueError(

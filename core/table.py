@@ -8,6 +8,7 @@ from decimal import Decimal
 import os
 import json
 import xml.etree.ElementTree as ET
+import uuid
 
 class Table:
     SUPPORTED_TYPES = {
@@ -28,6 +29,11 @@ class Table:
         "blob":      bytes,
         "json":      str,
         "xml":       str,
+        "enum":      str,
+        "uuid":             str,
+        "uniqueidentifier": str,
+        "smallint":  int,
+        "tinyint":   int,
     }
 
     def __init__(self, name: str, columns: list[tuple[str, str]],
@@ -107,7 +113,12 @@ class Table:
                     raise ValueError(
                         f"Unsupported column type '{column_type}' for column '{column_name}'."
                     )
-            
+    
+
+    @staticmethod
+    def _enum_values(column_type: str) -> list:
+        inner = column_type[column_type.index("(") + 1:column_type.index(")")]
+        return [v.strip() for v in inner.split(",")]
 
     def _persist_schema(self):
         """
@@ -320,15 +331,21 @@ class Table:
         self.auto_increment = {"column": column_name, "next_value": next_val}
         self._persist_schema()
 
-    def _get_next_auto_increment(self) -> int:
+    def _peek_next_auto_increment(self) -> int:
         """
-        Return the next AUTO_INCREMENT value and advance the counter.
-        Persists the updated counter immediately so it survives restarts.
+        Return the next AUTO_INCREMENT value without consuming it.
+        Used to inject a candidate value before validation runs.
         """
-        val = self.auto_increment["next_value"]
-        self.auto_increment["next_value"] = val + 1
+        return self.auto_increment["next_value"]
+
+    def _advance_auto_increment(self):
+        """
+        Consume the current AUTO_INCREMENT value and persist the counter.
+        Only called after a row has passed all validation and is about to be inserted.
+        """
+        self.auto_increment["next_value"] += 1
         self._persist_schema()
-        return val
+
 
     def add_foreign_key(self, column_name: str, ref_table: str,
                         ref_column: str, on_delete: str = None,
@@ -852,7 +869,9 @@ class Table:
         13. Append to rows and persist to disk
         14. Update all active indexes
         """
+
         column_index = self._build_column_index()
+        used_auto_increment = False
  
         # AUTO_INCREMENT: inject next value if PK column is omitted
         if self.auto_increment is not None:
@@ -860,12 +879,14 @@ class Table:
             ai_idx = column_index[ai_col]
  
             if len(row) == len(self.columns) - 1:
-                next_val = self._get_next_auto_increment()
+                next_val = self._peek_next_auto_increment()
                 row = list(row[:ai_idx]) + [next_val] + list(row[ai_idx:])
+                used_auto_increment = True
             elif len(row) == len(self.columns) and row[ai_idx] is None:
-                next_val = self._get_next_auto_increment()
+                next_val = self._peek_next_auto_increment()
                 row = list(row)
                 row[ai_idx] = next_val
+                used_auto_increment = True
  
         # Apply DEFAULT values for columns that are None and have a default
         row = list(row)
@@ -913,6 +934,27 @@ class Table:
                     raise ValueError(
                         f"Column '{column_name}' expects valid XML, got {value!r}."
                     )
+                
+            if value is not None and base_type == "smallint" and not (-32768 <= value <= 32767):
+                raise ValueError(f"Value {value} out of range for smallint.")
+            if value is not None and base_type == "tinyint" and not (-128 <= value <= 127):
+                raise ValueError(f"Value {value} out of range for tinyint.")
+                
+            
+            if value is not None and base_type == "enum":
+                allowed = self._enum_values(column_type)
+                if value not in allowed:
+                    raise ValueError(
+                        f"Column '{column_name}' expects one of {allowed}, got {value!r}."
+                    )
+                
+            if value is not None and base_type in ("uuid", "uniqueidentifier"):
+                try:
+                    uuid.UUID(value)
+                except (ValueError, AttributeError, TypeError):
+                    raise ValueError(
+                        f"Column '{column_name}' expects a valid UUID, got {value!r}."
+                    )
         
         self._validate_not_null(row)
  
@@ -938,9 +980,13 @@ class Table:
         self._validate_composite_unique(row)
         self._validate_check_constraints(row)
         self._validate_foreign_keys(row, db)
+
+        if used_auto_increment:
+            self._advance_auto_increment()
  
-        self.rows.append(row)
+        
         page_num, slot_offset = self.pager.append_row(row)
+        self.rows.append(row)
         self.row_offsets.append((page_num, slot_offset))
 
         for col in self.index_manager.indexes:
@@ -1342,6 +1388,28 @@ class Table:
                     raise ValueError(
                         f"Column '{col}' expects valid XML, got {value!r}."
                     )
+                
+            if value is not None and base_type == "smallint" and not (-32768 <= value <= 32767):
+                raise ValueError(f"Value {value} out of range for smallint.")
+            if value is not None and base_type == "tinyint" and not (-128 <= value <= 127):
+                raise ValueError(f"Value {value} out of range for tinyint.")
+                
+
+
+            if value is not None and base_type == "enum":
+                allowed = self._enum_values(column_type)
+                if value not in allowed:
+                    raise ValueError(
+                        f"Column '{col}' expects one of {allowed}, got {value!r}."
+                    )
+                
+            if value is not None and base_type in ("uuid", "uniqueidentifier"):
+                try:
+                    uuid.UUID(value)
+                except (ValueError, AttributeError, TypeError):
+                    raise ValueError(
+                        f"Column '{col}' expects a valid UUID, got {value!r}."
+                    )
  
             if col == self.primary_key and value is None:
                 raise ValueError(
@@ -1404,10 +1472,11 @@ class Table:
                 updated_rows.append(row)
  
         if updated_count > 0:
-            self.rows = updated_rows
             self.pager.rewrite_all_rows(updated_rows)
             _, self.row_offsets = self.pager.load_all_rows()
 
+            self.rows = updated_rows
+ 
  
             for col in self.index_manager.indexes:
                 if isinstance(col, str):

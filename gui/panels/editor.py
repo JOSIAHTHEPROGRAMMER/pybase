@@ -611,7 +611,7 @@ class EditorPanel(QWidget):
         alias_map = alias_map or {}
 
         # resolve view to its underlying SELECT if the name is a view
-        print(f"_execute_select called with table_name={table_name}")
+       # print(f"_execute_select called with table_name={table_name}")
         if table_name in self.db.views:
             print(f"resolving view: {self.db.views[table_name]}")
             view_sql = self.db.views[table_name]

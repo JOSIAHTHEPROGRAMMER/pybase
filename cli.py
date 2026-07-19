@@ -271,25 +271,47 @@ def _parse_value(val: str):
 
 def _split_column_defs(cols_part: str) -> list:
     """
-    Split column definitions by comma while respecting parentheses.
-    Commas inside CHECK(...) or REFERENCES(...) are not treated as separators.
+    Split column definitions by comma while respecting parentheses and quotes.
+    Commas inside CHECK(...), REFERENCES(...), or quoted DEFAULT values
+    are not treated as separators.
     """
     defs    = []
     current = ""
     depth   = 0
+    i       = 0
 
-    for char in cols_part:
-        if char == "(":
+    while i < len(cols_part):
+        char = cols_part[i]
+
+        if char in ("'", '"'):
+            quote = char
+            current += char
+            i += 1
+            while i < len(cols_part) and cols_part[i] != quote:
+                current += cols_part[i]
+                i += 1
+            if i < len(cols_part):
+                current += cols_part[i]
+                i += 1
+
+        elif char == "(":
             depth += 1
             current += char
+            i += 1
+
         elif char == ")":
             depth -= 1
             current += char
+            i += 1
+
         elif char == "," and depth == 0:
             defs.append(current.strip())
             current = ""
+            i += 1
+
         else:
             current += char
+            i += 1
 
     if current.strip():
         defs.append(current.strip())
@@ -376,12 +398,20 @@ def parse_create_table(command: str):
             auto_increment_col = col_name
 
         if "DEFAULT" in modifiers:
-            def_idx = modifiers.index("DEFAULT")
-            # The default value is the token immediately after DEFAULT in parts
-            raw_default = parts[def_idx + 3] if def_idx + 3 < len(parts) else None
+            col_def_upper  = col_def.upper()
+            default_start  = col_def_upper.index("DEFAULT") + len("DEFAULT")
+            remainder      = col_def[default_start:].strip()
+
+            if remainder.startswith("'") or remainder.startswith('"'):
+                quote       = remainder[0]
+                end_idx     = remainder.index(quote, 1)
+                raw_default = remainder[:end_idx + 1]
+            else:
+                raw_default = remainder.split()[0] if remainder.split() else None
+
             if raw_default is not None:
                 default_values[col_name] = _parse_value(raw_default)
-
+                
         # CHECK is detected from the raw col_def string because CHECK(col op val)
         # gets parsed as a single token by whitespace split and never matches modifiers
         col_def_upper = col_def.upper()

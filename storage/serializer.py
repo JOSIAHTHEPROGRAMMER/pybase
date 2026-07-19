@@ -1,6 +1,8 @@
 import struct
 from datetime import date, datetime, time, timedelta 
 from decimal import Decimal
+import uuid
+
 
 class Serializer:
     STRING_SIZE = 255
@@ -14,19 +16,13 @@ class Serializer:
 
     MONEY_SCALE = 2
 
-
     @staticmethod
-    def _type_size(column_type: str) -> int:
-        # returns the storage width in bytes for a given type string
-        if column_type == "int":     return 4
-        if column_type == "bigint":  return 8
-        if column_type == "float":   return 8
-        if column_type == "boolean": return 1
-        if column_type == "string":  return 1 + Serializer.STRING_SIZE
-        if column_type.startswith("varchar(") or column_type.startswith("char("):
-            n = int(column_type[column_type.index("(") + 1:column_type.index(")")])
-            return 1 + n  # 1 byte length prefix + n bytes
-        raise ValueError(f"Unknown type '{column_type}'")
+    def _enum_max_size(column_type: str) -> int:
+        inner = column_type[column_type.index("(") + 1:column_type.index(")")]
+        values = [v.strip() for v in inner.split(",")]
+        return max(len(v.encode("utf-8")) for v in values)
+
+
 
     @staticmethod
     def serialize_row(row, columns):
@@ -52,6 +48,12 @@ class Serializer:
                     result += b"\x00" + b"\x00" * 4
                 elif column_type == "bigint":
                     result += b"\x00" + b"\x00" * 8
+
+                elif column_type == "smallint":
+                    result += b"\x00" + b"\x00" * 2
+                elif column_type == "tinyint":
+                    result += b"\x00" + b"\x00" * 1
+
                 elif column_type == "float":
                     result += b"\x00" + b"\x00" * 8
                 elif column_type == "boolean":
@@ -63,7 +65,15 @@ class Serializer:
                 elif column_type.startswith("varchar(") or column_type.startswith("char("):
                     n = int(column_type[column_type.index("(") + 1:column_type.index(")")])
                     result += b"\x00" + b"\x00" * (1 + n)
+
                 
+                elif column_type.startswith("enum("):
+                    n = Serializer._enum_max_size(column_type)
+                    result += b"\x00" + b"\x00" * (1 + n)
+                
+                elif column_type in ("uuid", "uniqueidentifier"):
+                    result += b"\x00" + b"\x00" * 16
+
 
                 elif column_type.startswith("decimal("):
                     result += b"\x00" + b"\x00" * 8
@@ -96,6 +106,18 @@ class Serializer:
             elif column_type == "bigint":
                 result += value.to_bytes(8, byteorder="big", signed=True)
 
+            elif column_type == "smallint":
+                if not (-32768 <= value <= 32767):
+                    raise ValueError(f"Value {value} out of range for smallint.")
+                result += value.to_bytes(2, byteorder="big", signed=True)
+
+            elif column_type == "tinyint":
+                if not (-128 <= value <= 127):
+                    raise ValueError(f"Value {value} out of range for tinyint.")
+                result += value.to_bytes(1, byteorder="big", signed=True)
+
+
+
             elif column_type == "float":
                 result += struct.pack(">d", value)
 
@@ -122,6 +144,17 @@ class Serializer:
                 length_prefix = len(encoded).to_bytes(1, "big")
                 padded = encoded.ljust(n, b"\x00")
                 result += length_prefix + padded
+
+            
+            elif column_type.startswith("enum("):
+                n = Serializer._enum_max_size(column_type)
+                encoded = value.encode("utf-8")
+                length_prefix = len(encoded).to_bytes(1, "big")
+                padded = encoded.ljust(n, b"\x00")
+                result += length_prefix + padded
+
+            elif column_type in ("uuid", "uniqueidentifier"):
+                result += uuid.UUID(value).bytes
 
 
     
@@ -193,6 +226,9 @@ class Serializer:
                 # skip the column bytes and append None
                 if column_type == "int":      offset += 4
                 elif column_type == "bigint": offset += 8
+
+                elif column_type == "smallint": offset += 2
+                elif column_type == "tinyint":  offset += 1
                 elif column_type == "float":  offset += 8
                 elif column_type == "boolean": offset += 1
                 elif column_type == "string": offset += 1 + Serializer.STRING_SIZE
@@ -200,6 +236,14 @@ class Serializer:
                 elif column_type.startswith("varchar(") or column_type.startswith("char("):
                     n = int(column_type[column_type.index("(") + 1:column_type.index(")")])
                     offset += 1 + n
+
+                
+                elif column_type.startswith("enum("):
+                    n = Serializer._enum_max_size(column_type)
+                    offset += 1 + n
+
+                elif column_type in ("uuid", "uniqueidentifier"):
+                    offset += 16
 
 
                 elif column_type.startswith("decimal(") or column_type == "money":
@@ -244,6 +288,25 @@ class Serializer:
                 row.append(value)
                 offset += 8
 
+
+            elif column_type == "smallint":
+                value = int.from_bytes(
+                    data[offset:offset + 2],
+                    byteorder="big",
+                    signed=True
+                )
+                row.append(value)
+                offset += 2
+
+            elif column_type == "tinyint":
+                value = int.from_bytes(
+                    data[offset:offset + 1],
+                    byteorder="big",
+                    signed=True
+                )
+                row.append(value)
+                offset += 1
+
             elif column_type == "float":
                 value = struct.unpack(">d", data[offset:offset + 8])[0]
                 row.append(value)
@@ -271,6 +334,23 @@ class Serializer:
                 value = raw[:length].decode("utf-8")
                 row.append(value)
                 offset += n
+
+            
+            elif column_type.startswith("enum("):
+                n = Serializer._enum_max_size(column_type)
+                length = int.from_bytes(data[offset:offset + 1], "big")
+                offset += 1
+                raw = data[offset:offset + n]
+                value = raw[:length].decode("utf-8")
+                row.append(value)
+                offset += n
+
+            
+
+            elif column_type in ("uuid", "uniqueidentifier"):
+                value = str(uuid.UUID(bytes=bytes(data[offset:offset + 16])))
+                row.append(value)
+                offset += 16
 
 
 

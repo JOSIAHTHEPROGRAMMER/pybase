@@ -5,19 +5,9 @@ from PyQt6.QtWidgets import (
 
 from PyQt6.QtCore import Qt
 from gui.widgets.font import get_mono_font
-
-from cli import (
-    parse_alter_table, parse_truncate, parse_compact_table, parse_rename_table,
-    parse_create_view, parse_drop_view, parse_explain,
-    parse_create_table, parse_insert, parse_select,
-    parse_delete, parse_update, parse_create_index,
-    parse_drop_table, _detect_set_operator, resolve_subqueries
-)
 from gui.widgets.highlighter import SQLHighlighter
 from gui.widgets.history import QueryHistoryBar
-from query.planner import QueryPlanner
-from query.executor import QueryExecutor
-from query.utils import _has_aggregate
+from query.dispatch import execute_statement
 
 
 BACKGROUND   = "#0f0f0f"
@@ -30,12 +20,13 @@ EDITOR_BG    = "#141414"
 
 
 class EditorPanel(QWidget):
-    def __init__(self, db, on_result, on_schema_change, on_transaction_change):
+    def __init__(self, db, on_result, on_schema_change, on_transaction_change, on_explain):
         super().__init__()
         self.db = db
         self.on_result = on_result
         self.on_schema_change = on_schema_change
         self.on_transaction_change = on_transaction_change
+        self.on_explain = on_explain
         self._build_ui()
 
     def _build_ui(self):
@@ -235,6 +226,13 @@ class EditorPanel(QWidget):
         """Load a historical query back into the editor."""
         self.editor.setPlainText(query)
 
+    def set_query(self, text: str):
+        """
+        Replace editor contents with the given query text.
+        Used by the schema panel when a table is clicked.
+        """
+        self.editor.setPlainText(text)
+
     def _run_query(self):
         """
         Parse and execute SQL from the editor.
@@ -274,8 +272,14 @@ class EditorPanel(QWidget):
 
         Strips comment lines starting with double dash.
         Strips inline comments from end of lines.
-        Rejoins cleaned lines and splits on semicolons.
-        Skips empty results.
+        Rejoins cleaned lines into a single string, then splits on semicolons.
+
+        Semicolons inside quoted strings are never treated as separators.
+        A CREATE PROCEDURE statement additionally protects any semicolons
+        inside its BEGIN...END body. This protection is scoped to
+        statements that open with CREATE PROCEDURE specifically, since
+        BEGIN also has an unrelated standalone meaning for starting a
+        transaction elsewhere in the language.
         """
         lines = []
         for line in raw.splitlines():
@@ -287,410 +291,95 @@ class EditorPanel(QWidget):
             lines.append(stripped)
 
         cleaned = " ".join(lines)
-        parts = cleaned.split(";")
 
-        return [p.strip() for p in parts if p.strip()]
+        statements         = []
+        current            = ""
+        i                  = 0
+        in_procedure_body  = False
+        begin_depth        = 0
+
+        while i < len(cleaned):
+            char = cleaned[i]
+
+            if char in ("'", '"'):
+                quote = char
+                current += char
+                i += 1
+                while i < len(cleaned) and cleaned[i] != quote:
+                    current += cleaned[i]
+                    i += 1
+                if i < len(cleaned):
+                    current += cleaned[i]
+                    i += 1
+                continue
+
+            if not in_procedure_body and current.strip().upper().startswith("CREATE PROCEDURE"):
+                if cleaned[i:i+5].upper() == "BEGIN" and self._is_word_boundary(cleaned, i, i + 5):
+                    in_procedure_body = True
+                    begin_depth = 1
+                    current += cleaned[i:i+5]
+                    i += 5
+                    continue
+
+            if in_procedure_body:
+                if cleaned[i:i+5].upper() == "BEGIN" and self._is_word_boundary(cleaned, i, i + 5):
+                    begin_depth += 1
+                    current += cleaned[i:i+5]
+                    i += 5
+                    continue
+                if cleaned[i:i+3].upper() == "END" and self._is_word_boundary(cleaned, i, i + 3):
+                    begin_depth -= 1
+                    current += cleaned[i:i+3]
+                    i += 3
+                    if begin_depth == 0:
+                        in_procedure_body = False
+                    continue
+
+            if char == ";" and not in_procedure_body:
+                if current.strip():
+                    statements.append(current.strip())
+                current = ""
+                i += 1
+                continue
+
+            current += char
+            i += 1
+
+        if current.strip():
+            statements.append(current.strip())
+
+        return statements
+
+    @staticmethod
+    def _is_word_boundary(text: str, start: int, end: int) -> bool:
+        before_ok = start == 0 or not text[start - 1].isalnum()
+        after_ok  = end >= len(text) or not text[end].isalnum()
+        return before_ok and after_ok
+
 
     def _execute_single(self, command: str) -> bool:
         """
-        Execute a single SQL statement.
+        Execute a single SQL statement via the shared dispatch layer.
+        Confirmation dialogs use QMessageBox for destructive operations.
         Returns True if successful, False if an error occurred.
-        All results and errors are passed to the on_result callback.
-
-        SAVEPOINT variants are checked before plain ROLLBACK so that
-        "ROLLBACK TO SAVEPOINT" is never swallowed by the ROLLBACK branch.
         """
-        cmd_upper = command.upper().strip()
-
-        try:
-            if cmd_upper == "BEGIN":
-                self.db.begin_transaction()
-                self.on_transaction_change()
-                self.on_result([], [], "Transaction started.")
-
-            elif cmd_upper == "COMMIT":
-                results = self.db.commit_transaction()
-                self.on_transaction_change()
-                self.on_result([], [], "Transaction committed.\n" + "\n".join(results))
-
-            # SAVEPOINT branches must appear before the plain ROLLBACK check
-            # because "ROLLBACK TO SAVEPOINT" starts with "ROLLBACK"
-            elif cmd_upper.startswith("ROLLBACK TO SAVEPOINT"):
-                # Extract savepoint name from: ROLLBACK TO SAVEPOINT <name>
-                name = command.strip().split()[-1]
-                self.db.current_transaction.rollback_to_savepoint(name)
-                self.on_result([], [], f"Rolled back to savepoint '{name}'.")
-
-            elif cmd_upper.startswith("RELEASE SAVEPOINT"):
-                # Extract savepoint name from: RELEASE SAVEPOINT <name>
-                name = command.strip().split()[-1]
-                self.db.current_transaction.release_savepoint(name)
-                self.on_result([], [], f"Savepoint '{name}' released.")
-
-            elif cmd_upper.startswith("SAVEPOINT"):
-                # Extract savepoint name from: SAVEPOINT <name>
-                name = command.strip().split()[-1]
-                self.db.current_transaction.savepoint(name)
-                self.on_result([], [], f"Savepoint '{name}' created.")
-
-            elif cmd_upper == "ROLLBACK":
-                self.db.rollback_transaction()
-                self.on_transaction_change()
-                self.on_result([], [], "Transaction rolled back.")
-
-
-
-            elif cmd_upper.startswith("CREATE HASH INDEX"):
-                table_name, column_name = parse_create_index(command)
-                table = self.db.get_table(table_name)
-                if isinstance(column_name, list):
-                    raise ValueError("Hash index does not support multiple columns.")
-                msg = table.create_hash_index(column_name)
-                self.on_schema_change()
-                self.on_result([], [], msg)
-
-            elif cmd_upper.startswith("CREATE INDEX"):
-                table_name, column_name = parse_create_index(command)
-                table = self.db.get_table(table_name)
-                if isinstance(column_name, list):
-                    msg = table.create_composite_index(column_name)
-                else:
-                    msg = table.create_index(column_name)
-                print(msg)
-
-            elif cmd_upper.startswith("CREATE TABLE"):
-                (table_name, columns, unique_columns, primary_key,
-                foreign_keys, not_null_columns, default_values,
-                check_constraints, auto_increment_col) = parse_create_table(command)
-
-                table = self.db.create_table(table_name, columns)
-
-                for col in unique_columns:
-                    table.add_unique_constraint(col)
-
-                if primary_key:
-                    table.set_primary_key(primary_key)
-
-                for col in not_null_columns:
-                    table.add_not_null_constraint(col)
-
-                for col, val in default_values.items():
-                    table.set_default_value(col, val)
-
-                for cc in check_constraints:
-                    table.add_check_constraint(cc["column"], cc["op"], cc["value"])
-
-                for fk in foreign_keys:
-                    table.add_foreign_key(
-                        fk["column"],
-                        fk["ref_table"],
-                        fk["ref_column"],
-                        on_delete=fk.get("on_delete"),
-                        on_update=fk.get("on_update")
-                    )
-
-                if auto_increment_col:
-                    table.set_auto_increment(auto_increment_col)
-
-                self.on_schema_change()
-                self.on_result([], [], f"Table '{table_name}' created successfully.")
-
-            elif cmd_upper.startswith("EXPLAIN"):
-                inner_sql = parse_explain(command)
-                (table_name, selected_columns, conditions, order_by,
-                limit, distinct, group_by, having, join, alias_map) = parse_select(inner_sql)
-                table = self.db.get_table(table_name)
-                result = table.explain(selected_columns, conditions, order_by, group_by, join, alias_map)
-                self.on_result([], [], result)
-
-            elif cmd_upper.startswith("ALTER TABLE"):
-                action, table_name, col_a, col_b, extra = parse_alter_table(command)
-                table = self.db.get_table(table_name)
-                if action == "add":
-                    table.alter_add_column(col_a, col_b, default=extra)
-                    self.on_schema_change()
-                    self.on_result([], [], f"Column '{col_a}' added to '{table_name}'.")
-                elif action == "drop":
-                    table.alter_drop_column(col_a)
-                    self.on_schema_change()
-                    self.on_result([], [], f"Column '{col_a}' dropped from '{table_name}'.")
-                elif action == "rename":
-                    table.alter_rename_column(col_a, col_b)
-                    self.on_schema_change()
-                    self.on_result([], [], f"Column '{col_a}' renamed to '{col_b}' in '{table_name}'.")
-
-            elif cmd_upper.startswith("TRUNCATE"):
-                table_name = parse_truncate(command)
-                self.db.get_table(table_name).truncate()
-                self.on_schema_change()
-                self.on_result([], [], f"Table '{table_name}' truncated.")
-
-            
-            elif cmd_upper.startswith("COMPACT TABLE"):
-                table_name = parse_compact_table(command)
-                self.db.get_table(table_name).compact()
-                self.on_result([], [], f"Table '{table_name}' compacted.")
-
-            elif cmd_upper.startswith("RENAME TABLE"):
-                old_name, new_name = parse_rename_table(command)
-                self.db.rename_table(old_name, new_name)
-                self.on_schema_change()
-                self.on_result([], [], f"Table '{old_name}' renamed to '{new_name}'.")
-
-            elif cmd_upper.startswith("CREATE VIEW") or cmd_upper.startswith("CREATE OR REPLACE VIEW"):
-
-                view_name, select_sql, replace = parse_create_view(command)
-                self.db.create_view(view_name, select_sql, replace)
-                self.on_schema_change()
-                self.on_result([], [], f"View '{view_name}' created.")
-
-            elif cmd_upper.startswith("DROP VIEW"):
-                view_name = parse_drop_view(command)
-                self.db.drop_view(view_name)
-                self.on_schema_change()
-                self.on_result([], [], f"View '{view_name}' dropped.")
-
-
-
-
-            elif cmd_upper.startswith("DROP DATABASE"):
-                if self.db.in_transaction():
-                    raise ValueError(
-                        "Cannot DROP DATABASE inside a transaction. "
-                        "COMMIT or ROLLBACK first."
-                    )
-
-                # Stricter confirm dialog since this destroys everything
-                confirm = QMessageBox(self)
-                confirm.setWindowTitle("Confirm DROP DATABASE")
-                confirm.setText("Drop the entire database?")
-                confirm.setInformativeText(
-                    "This will permanently delete ALL tables, ALL data, and query history. "
-                    "This cannot be undone."
-                )
-                confirm.setStandardButtons(
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
-                )
-                confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
-                confirm.setStyleSheet("""
-                    QMessageBox {
-                        background-color: #1a1a1a;
-                        color: #ededed;
-                    }
-                    QLabel { color: #ededed; }
-                    QPushButton {
-                        background-color: #2e2e2e;
-                        color: #ededed;
-                        border: 1px solid #444;
-                        border-radius: 4px;
-                        padding: 6px 16px;
-                        min-width: 80px;
-                    }
-                    QPushButton:hover { background-color: #7f1d1d; }
-                """)
-
-                if confirm.exec() != QMessageBox.StandardButton.Yes:
-                    self.on_result([], [], "DROP DATABASE cancelled.")
-                    return True
-
-                self.db.drop_database()
-                self.on_schema_change()
-                self.history_bar._clear()
-                self.on_result([], [], "Database dropped. All tables and data deleted.")
-
-            elif cmd_upper.startswith("DROP TABLE"):
-                if self.db.in_transaction():
-                    raise ValueError("Cannot DROP TABLE inside a transaction.")
-                table_name = parse_drop_table(command)
-
-                # Confirm before destroying data, destructive and irreversible
-                confirm = QMessageBox(self)
-                confirm.setWindowTitle("Confirm DROP TABLE")
-                confirm.setText(f"Drop table '{table_name}'?")
-                confirm.setInformativeText(
-                    "This will permanently delete the table and all its data. "
-                    "This cannot be undone."
-                )
-                confirm.setStandardButtons(
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
-                )
-                confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
-                confirm.setStyleSheet("""
-                    QMessageBox {
-                        background-color: #1a1a1a;
-                        color: #ededed;
-                    }
-                    QLabel { color: #ededed; }
-                    QPushButton {
-                        background-color: #2e2e2e;
-                        color: #ededed;
-                        border: 1px solid #444;
-                        border-radius: 4px;
-                        padding: 6px 16px;
-                        min-width: 80px;
-                    }
-                    QPushButton:hover { background-color: #3a3a3a; }
-                """)
-
-                if confirm.exec() != QMessageBox.StandardButton.Yes:
-                    self.on_result([], [], "DROP TABLE cancelled.")
-                    return True
-
-                self.db.drop_table(table_name)
-                self.on_schema_change()
-                self.on_result([], [], f"Table '{table_name}' dropped.")
-
-            elif cmd_upper.startswith("INSERT INTO"):
-                table_name, row = parse_insert(command)
-                if self.db.in_transaction():
-                    self.db.current_transaction.add("insert", table_name, row=row)
-                    self.on_result([], [], f"Queued: INSERT into '{table_name}'.")
-                else:
-                    # Pass db so FK constraints can be validated
-                    self.db.get_table(table_name).insert(row, db=self.db)
-                    self.on_result([], [], f"Row inserted into '{table_name}'.")
-
-            elif cmd_upper.startswith("SELECT"):
-                set_op = _detect_set_operator(command)
-                if set_op:
-                    rows, col_names = self._execute_set_operation(set_op)
-                else:
-                    (table_name, selected_columns, conditions,
-                    order_by, limit, distinct, group_by, having, join, alias_map) = parse_select(command)
-                    rows, col_names = self._execute_select(
-                        table_name, selected_columns, conditions,
-                        order_by, limit, distinct, group_by, having, join, alias_map
-                    )
-                self.on_result(col_names, rows, f"{len(rows)} row(s) returned.")
-
-            elif cmd_upper.startswith("DELETE FROM"):
-                table_name, conditions = parse_delete(command)
-                if self.db.in_transaction():
-                    self.db.current_transaction.add("delete", table_name, conditions=conditions)
-                    self.on_result([], [], f"Queued: DELETE from '{table_name}'.")
-                else:
-                    count = self.db.get_table(table_name).delete(conditions, db=self.db)
-                    self.on_result([], [], f"{count} row(s) deleted from '{table_name}'.")
-
-            elif cmd_upper.startswith("UPDATE"):
-                table_name, assignments, conditions = parse_update(command)
-                if self.db.in_transaction():
-                    self.db.current_transaction.add(
-                        "update", table_name,
-                        assignments=assignments,
-                        conditions=conditions
-                    )
-                    self.on_result([], [], f"Queued: UPDATE '{table_name}'.")
-                else:
-                    # Pass db so FK constraints can be validated
-                    count = self.db.get_table(table_name).update(
-                        assignments, conditions, db=self.db
-                    )
-                    self.on_result([], [], f"{count} row(s) updated in '{table_name}'.")
-
-            else:
-                self.on_result([], [], f"Unsupported command: {command[:40]}")
-
-            return True
-
-        except Exception as e:
-            self.on_result([], [], f"Error in '{command[:40]}...': {e}")
-            return False
-        
-
-
-
-    def _execute_select(self, table_name, selected_columns, conditions,
-                        order_by, limit, distinct, group_by, having, join=None, alias_map=None):
-        """
-        Resolve subqueries in conditions, then run select_aggregate or
-        select_advanced depending on whether GROUP BY is present.
-        Returns (rows, col_names).
-        """
-
-        alias_map = alias_map or {}
-
-        # resolve view to its underlying SELECT if the name is a view
-       # print(f"_execute_select called with table_name={table_name}")
-        if table_name in self.db.views:
-            print(f"resolving view: {self.db.views[table_name]}")
-            view_sql = self.db.views[table_name]
-            (table_name, selected_columns, conditions, order_by,
-            limit, distinct, group_by, having, join, alias_map) = parse_select(view_sql)
-
-
-        table = self.db.get_table(table_name)
-
-        # Resolve subqueries inside conditions before evaluation
-        resolve_subqueries(conditions, self.db)
-
-
-        if join:
-
-            plan = QueryPlanner.build(join, selected_columns, conditions, order_by, limit, distinct)
-            rows, col_names, _ = QueryExecutor(self.db).execute(plan)
-            return rows, col_names
-        
-        if group_by or _has_aggregate(selected_columns):
-            rows = table.select_aggregate(selected_columns, conditions, group_by, having)
-        else:
-            rows = table.select_advanced(
-                selected_columns, conditions, order_by, limit, distinct=distinct
-            )
-
-        if selected_columns == ["*"]:
-            col_names = [col[0] for col in table.columns]
-        else:
-            col_names = [alias_map.get(col, col) for col in selected_columns]
-
-        return rows, col_names
-
-
-
-    def _execute_set_operation(self, set_op):
-        """
-        Execute UNION, UNION ALL, INTERSECT, or EXCEPT.
-        Parses and executes each side independently then merges.
-        Returns (rows, col_names).
-        """
-        operator, left_sql, right_sql = set_op
-
-        (lt, lc, lcond, lo, ll, ld, lg, lh, lj, lam) = parse_select(left_sql)
-        (rt, rc, rcond, ro, rl, rd, rg, rh, rj, ram) = parse_select(right_sql)
-
-        left_rows,  col_names = self._execute_select(lt, lc, lcond, lo, ll, ld, lg, lh, lj, lam)
-        right_rows, _         = self._execute_select(rt, rc, rcond, ro, rl, rd, rg, rh, rj, ram)
-      
-        if operator == "UNION ALL":
-            result = left_rows + right_rows
-
-        elif operator == "UNION":
-            seen   = []
-            result = []
-            for row in left_rows + right_rows:
-                if row not in seen:
-                    seen.append(row)
-                    result.append(row)
-
-        elif operator == "INTERSECT":
-            seen, result = [], []
-            for row in left_rows:
-                if row in right_rows and row not in seen:
-                    seen.append(row)
-                    result.append(row)
-
-        elif operator == "EXCEPT":
-            seen, result = [], []
-            for row in left_rows:
-                if row not in right_rows and row not in seen:
-                    seen.append(row)
-                    result.append(row)
-        else:
-            result = left_rows
-
-        return result, col_names
-    
-
-
-
-
+        return execute_statement(
+            command,
+            self.db,
+            on_result=self.on_result,
+            confirm=self._confirm_dialog,
+            on_schema_change=self.on_schema_change,
+            on_transaction_change=self.on_transaction_change,
+            on_explain=self.on_explain,
+        )
+
+    def _confirm_dialog(self, title: str, text: str, informative: str) -> bool:
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle(title)
+        confirm.setText(text)
+        confirm.setInformativeText(informative)
+        confirm.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+        )
+        confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        return confirm.exec() == QMessageBox.StandardButton.Yes

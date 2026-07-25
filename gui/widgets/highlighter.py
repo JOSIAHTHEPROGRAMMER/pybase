@@ -30,19 +30,17 @@ class SQLHighlighter(QSyntaxHighlighter):
         # Transactions and savepoints
         "BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE",
         # Boolean literals
-        "TRUE", "FALSE",
+        "TRUE", "FALSE", 
         # Query system
-        "DISTINCT",
-        "AS",
+        "DISTINCT", "CALL", "AS", "PROCEDURE"
         "UNION", "INTERSECT", "EXCEPT", "ALL",
         "GROUP", "HAVING",
         "EXISTS", "ANY",
-        "COUNT", "SUM", "AVG", "MIN", "MAX",
-
+        "COUNT", "SUM", "AVG", "MIN", "MAX", "END",
         "ALTER", "ADD", "COLUMN", "RENAME", "TRUNCATE", "VIEW", "EXPLAIN", "TO",
         "COMPACT",
         # Joins
-        "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "ON","HASH",
+        "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "HASH",
     ]
 
     TYPES = ["INT", "BIGINT", "FLOAT", "BOOLEAN", "BOOL", "STRING"]

@@ -8,7 +8,7 @@ from gui.panels.editor import EditorPanel
 from gui.panels.results import ResultsPanel
 from gui.panels.schema import SchemaPanel
 from gui.widgets.status_bar import TransactionStatusBar
-
+from gui.widgets.explain_dialog import ExplainDialog
 BACKGROUND = "#0f0f0f"
 BORDER     = "#2e2e2e"
 
@@ -89,6 +89,38 @@ class MainWindow(QMainWindow):
                 background: #1e1e1e;
                 color: #ededed;
             }}
+
+            QMessageBox, QInputDialog {{
+                background-color: #1a1a1a;
+                color: #ededed;
+            }}
+            QMessageBox QLabel, QInputDialog QLabel {{
+                color: #ededed;
+                background-color: transparent;
+            }}
+            QInputDialog QLineEdit {{
+                background-color: #141414;
+                color: #ededed;
+                border: 1px solid #2e2e2e;
+                border-radius: 4px;
+                padding: 6px 8px;
+                selection-background-color: #00e59933;
+                selection-color: #ededed;
+            }}
+            QInputDialog QLineEdit:focus {{
+                border-color: #00e599;
+            }}
+            QMessageBox QPushButton, QInputDialog QPushButton {{
+                background-color: #2e2e2e;
+                color: #ededed;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 6px 16px;
+                min-width: 80px;
+            }}
+            QMessageBox QPushButton:hover, QInputDialog QPushButton:hover {{
+                background-color: #3a3a3a;
+            }}
         """)
 
     #  UI construction                                                     #
@@ -106,7 +138,11 @@ class MainWindow(QMainWindow):
         self.main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
 
         #  Left: schema panel 
-        self.schema_panel = SchemaPanel(self.db)
+        self.schema_panel = SchemaPanel(
+            self.db,
+            on_schema_change=self._refresh_schema,
+            on_table_selected=self._on_table_selected,
+        )
         self.schema_panel.setMinimumWidth(160)
         self.main_splitter.addWidget(self.schema_panel)
 
@@ -140,6 +176,7 @@ class MainWindow(QMainWindow):
             on_result=self._on_query_result,
             on_schema_change=self._refresh_schema,
             on_transaction_change=self._update_transaction_status,
+            on_explain=self._show_explain,
         )
         self.right_splitter.addWidget(self.editor_panel)
 
@@ -253,6 +290,14 @@ class MainWindow(QMainWindow):
     def _refresh_schema(self):
         self.schema_panel.refresh()
         self.results_panel.refresh_er()
+
+    def _show_explain(self, plan_text: str):
+        dialog = ExplainDialog(plan_text, parent=self)
+        dialog.show()
+        self._explain_dialog = dialog  # keep a reference so it isn't garbage collected
+    
+    def _on_table_selected(self, table_name: str):
+        self.editor_panel.set_query(f"SELECT * FROM {table_name};")
 
     def _update_transaction_status(self):
         self.status_bar.update_status(self.db.in_transaction())

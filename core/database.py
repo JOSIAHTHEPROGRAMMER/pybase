@@ -4,14 +4,21 @@ from storage.schema_manager import SchemaManager
 from core.transaction import Transaction
 import json
 
+JSON_COMPATIBLE_BASE_TYPES = {"int", "float", "boolean", "string", "varchar", "char", "text"}
+
+
 class Database:
     def __init__(self, folder: str = "data"):
         self.folder = folder
         self.tables = {}
         self.views  = {}
+        self.procedures = {}
+        self.custom_types = {}
         self.current_transaction = None
         self._reload_existing_tables()
         self._reload_existing_views()
+        self._reload_existing_custom_types()
+        self._reload_existing_procedures()
 
     def _reload_existing_tables(self):
         """
@@ -40,6 +47,33 @@ class Database:
             
             with open(views_path, "r") as f:
                 self.views = json.load(f)
+
+
+    def _reload_existing_custom_types(self):
+        types_path = os.path.join(self.folder, "custom_types.json")
+        if os.path.exists(types_path):
+            with open(types_path, "r") as f:
+                self.custom_types = json.load(f)
+
+    def _persist_custom_types(self):
+        types_path = os.path.join(self.folder, "custom_types.json")
+        with open(types_path, "w") as f:
+            json.dump(self.custom_types, f, indent=2)
+
+
+
+    def _reload_existing_procedures(self):
+        procedures_path = os.path.join(self.folder, "procedures.json")
+        if os.path.exists(procedures_path):
+            with open(procedures_path, "r") as f:
+                self.procedures = json.load(f)
+
+    def _persist_procedures(self):
+        procedures_path = os.path.join(self.folder, "procedures.json")
+        with open(procedures_path, "w") as f:
+            json.dump(self.procedures, f, indent=2)
+
+
 
 
     def _persist_views(self):
@@ -87,7 +121,8 @@ class Database:
     def drop_database(self):
         """
         Destroy all tables and wipe all persisted data from disk.
-        Equivalent to dropping every table at once plus clearing history.
+        Equivalent to dropping every table at once plus clearing history,
+        views, custom types, and stored procedures.
         The data folder is kept so the engine can restart cleanly.
         Used for a full reset of the database state.
         """
@@ -103,6 +138,16 @@ class Database:
 
         # Clear in-memory registry
         self.tables.clear()
+
+        # Clear views, custom types, and stored procedures, in memory and on disk
+        self.views.clear()
+        self.custom_types.clear()
+        self.procedures.clear()
+
+        for filename in ("views.json", "custom_types.json", "procedures.json"):
+            path = os.path.join(self.folder, filename)
+            if os.path.exists(path):
+                os.remove(path)
 
         # Wipe query history file if it exists
         history_path = os.path.join(self.folder, "history.json")
@@ -129,6 +174,127 @@ class Database:
         if name not in self.views:
             raise ValueError(f"View '{name}' does not exist.")
         return self.views[name]
+
+
+
+
+
+    def create_procedure(self, name: str, params: list, body: list):
+        if name in self.tables:
+            raise ValueError(f"A table named '{name}' already exists.")
+        if name in self.procedures:
+            raise ValueError(f"Procedure '{name}' already exists.")
+        if not body:
+            raise ValueError("CREATE PROCEDURE requires at least one statement.")
+
+        self.procedures[name] = {"params": params, "body": body}
+        self._persist_procedures()
+
+    def drop_procedure(self, name: str):
+        if name not in self.procedures:
+            raise ValueError(f"Procedure '{name}' does not exist.")
+        del self.procedures[name]
+        self._persist_procedures()
+
+    def has_procedure(self, name: str) -> bool:
+        return name in self.procedures
+
+    def get_procedure(self, name: str) -> dict:
+        if name not in self.procedures:
+            raise ValueError(f"Procedure '{name}' does not exist.")
+        return self.procedures[name]
+
+
+
+    def create_type(self, name: str, fields: list):
+        if name in self.tables:
+            raise ValueError(f"A table named '{name}' already exists.")
+        if name in self.views:
+            raise ValueError(f"A view named '{name}' already exists.")
+        if name in self.custom_types:
+            raise ValueError(f"Type '{name}' already exists.")
+        if not fields:
+            raise ValueError("CREATE TYPE requires at least one field.")
+
+        for field_name, field_type in fields:
+            base = field_type.split("(")[0]
+            if base not in JSON_COMPATIBLE_BASE_TYPES and base not in self.custom_types:
+                raise ValueError(
+                    f"Field '{field_name}' has unsupported type '{field_type}' for type '{name}'. "
+                    "Composite type fields must be int, float, boolean, string, varchar, "
+                    "char, text, or another existing custom type."
+                )
+
+        self.custom_types[name] = fields
+        self._persist_custom_types()
+
+    def drop_type(self, name: str):
+        if name not in self.custom_types:
+            raise ValueError(f"Type '{name}' does not exist.")
+
+        for table_name, table in self.tables.items():
+            for col_name, type_name in table.custom_type_columns.items():
+                if type_name == name:
+                    raise ValueError(
+                        f"Cannot drop type '{name}': in use by column "
+                        f"'{col_name}' in table '{table_name}'."
+                    )
+
+        for other_name, fields in self.custom_types.items():
+            if other_name == name:
+                continue
+            for field_name, field_type in fields:
+                if field_type.split("(")[0] == name:
+                    raise ValueError(
+                        f"Cannot drop type '{name}': referenced as a field "
+                        f"in type '{other_name}'."
+                    )
+
+        del self.custom_types[name]
+        self._persist_custom_types()
+
+    def has_custom_type(self, name: str) -> bool:
+        return name in self.custom_types
+
+    def validate_composite_value(self, type_name: str, value, field_path: str = None):
+        """
+        Recursively validate a JSON-decoded value against a registered
+        composite type definition. Raises ValueError on any mismatch.
+        """
+        if type_name not in self.custom_types:
+            raise ValueError(f"Unknown type '{type_name}'.")
+
+        label = field_path or type_name
+        fields = self.custom_types[type_name]
+
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"Value for type '{label}' must be a JSON object, got {type(value).__name__}."
+            )
+
+        field_names = [f[0] for f in fields]
+        extra = set(value.keys()) - set(field_names)
+        if extra:
+            raise ValueError(f"Unexpected fields {sorted(extra)} for type '{label}'.")
+
+        for field_name, field_type in fields:
+            if field_name not in value:
+                raise ValueError(f"Missing field '{field_name}' for type '{label}'.")
+
+            field_value = value[field_name]
+            if field_value is None:
+                continue
+
+            base = field_type.split("(")[0]
+            if base in self.custom_types:
+                self.validate_composite_value(base, field_value, f"{label}.{field_name}")
+            else:
+                expected = Table.SUPPORTED_TYPES.get(base)
+                if expected and not isinstance(field_value, expected):
+                    raise ValueError(
+                        f"Field '{field_name}' of type '{label}' expects "
+                        f"'{field_type}', got {type(field_value).__name__}."
+                    )
 
     def rename_table(self, old_name: str, new_name: str):
         if old_name not in self.tables:

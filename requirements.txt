@@ -2,3 +2,4 @@ PyQt6
 matplotlib
 pytest>=9.0.2
 pytest-cov
+pytest-qt

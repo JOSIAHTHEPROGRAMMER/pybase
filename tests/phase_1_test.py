@@ -6,13 +6,13 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from core.database import Database
-from cli import (
+from query.sql_parser import (
     parse_create_table, parse_insert, parse_select,
-    parse_delete, parse_update, parse_alter_table,
-    parse_truncate, parse_rename_table, parse_create_view,
-    parse_drop_view, parse_explain, _detect_set_operator,
+    parse_delete, parse_update,  _detect_set_operator,
     resolve_subqueries
 )
+
+
 from query.planner import QueryPlanner
 from query.executor import QueryExecutor
 from query.utils import _has_aggregate

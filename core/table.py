@@ -60,6 +60,7 @@ class Table:
             self.check_constraints     = []
             self.composite_unique      = []
             self.auto_increment        = None
+            self.custom_type_columns   = {}
             self._persist_schema()
 
         else:
@@ -75,6 +76,7 @@ class Table:
             self.composite_unique      = schema.get("composite_unique", [])
             self.auto_increment        = schema.get("auto_increment", None)
             self.composite_indexes = schema.get("composite_indexes", [])
+            self.custom_type_columns = schema.get("custom_type_columns", {})
 
             column_index = self._build_column_index()
             for col in schema.get("indexes", []):
@@ -140,7 +142,8 @@ class Table:
             self.composite_primary_key,
             self.composite_unique,
             hash_indexes=self.hash_indexes,
-            composite_indexes=self.composite_indexes
+            composite_indexes=self.composite_indexes,
+            custom_type_columns=self.custom_type_columns
         )
 
 
@@ -271,6 +274,16 @@ class Table:
                 )
 
         self.not_null_columns.add(column_name)
+        self._persist_schema()
+
+
+    def register_custom_type_column(self, column_name: str, type_name: str):
+        """
+        Mark a column as backed by a registered composite type.
+        Column is physically stored as json, this dict tracks the
+        original type name for validation on insert and update.
+        """
+        self.custom_type_columns[column_name] = type_name
         self._persist_schema()
 
     def set_default_value(self, column_name: str, value):
@@ -799,6 +812,63 @@ class Table:
 
 
 
+    def column_stats(self, column_name: str) -> dict:
+            """
+            Compute summary statistics for a single column.
+            Numeric types get count, nulls, min, max, avg.
+            All other types get count, nulls, distinct count.
+            Enum columns additionally get a value frequency breakdown.
+            """
+            col_names = [col[0] for col in self.columns]
+            if column_name not in col_names:
+                raise ValueError(f"Column '{column_name}' does not exist.")
+
+            column_index = self._build_column_index()
+            idx          = column_index[column_name]
+            column_type  = dict(self.columns)[column_name]
+            base_type    = column_type.split("(")[0]
+
+            values      = [row[idx] for row in self.rows]
+            non_null    = [v for v in values if v is not None]
+            null_count  = len(values) - len(non_null)
+
+            stats = {
+                "column": column_name,
+                "type":   column_type,
+                "count":  len(values),
+                "nulls":  null_count,
+            }
+
+            numeric_types = ("int", "bigint", "float", "decimal", "money", "smallint", "tinyint")
+
+            if base_type in numeric_types:
+                if non_null:
+                    stats["min"] = min(non_null)
+                    stats["max"] = max(non_null)
+                    stats["avg"] = sum(non_null) / len(non_null)
+                else:
+                    stats["min"] = None
+                    stats["max"] = None
+                    stats["avg"] = None
+            else:
+                stats["distinct"] = len(set(non_null))
+
+                if base_type == "enum":
+                    allowed = self._enum_values(column_type)
+                    counts  = {val: 0 for val in allowed}
+                    for v in non_null:
+                        if v in counts:
+                            counts[v] += 1
+                    stats["value_counts"] = counts
+
+            return stats
+
+
+
+
+
+
+
     def explain(self, selected_columns, conditions, order_by, group_by, join, alias_map):
         lines = []
 
@@ -810,17 +880,21 @@ class Table:
             lines.append(f"Table: '{self.name}'")
 
 
-            if (
-                len(conditions) == 1
-                and conditions[0].get("type") == "simple"
-                and conditions[0].get("op") == "="
-                and self.index_manager.has_index(conditions[0].get("column", "").split(".")[-1])
-            ):
-                lines.append(f"Index scan on '{conditions[0]['column']}'")
-            elif conditions:
-                lines.append("Full table scan with WHERE filter")
-            else:
-                lines.append("Full table scan")
+        eligible = (
+                        len(conditions) == 1
+                        and conditions[0].get("type") == "simple"
+                        and conditions[0].get("op") == "="
+                    )
+        cond_col = conditions[0].get("column", "").split(".")[-1] if eligible else None
+
+        if eligible and self.index_manager.has_hash_index(cond_col):
+            lines.append(f"Hash index scan on '{conditions[0]['column']}'")
+        elif eligible and self.index_manager.has_index(cond_col):
+            lines.append(f"Index scan on '{conditions[0]['column']}'")
+        elif conditions:
+            lines.append("Full table scan with WHERE filter")
+        else:
+            lines.append("Full table scan")
 
         if group_by:
             lines.append(f"GROUP BY: {', '.join(group_by)}")
@@ -926,6 +1000,12 @@ class Table:
                     raise ValueError(
                         f"Column '{column_name}' expects valid JSON, got {value!r}."
                     )
+
+
+            if value is not None and column_name in self.custom_type_columns and db is not None:
+                db.validate_composite_value(
+                    self.custom_type_columns[column_name], json.loads(value)
+                )
 
             if value is not None and base_type == "xml":
                 try:
@@ -1336,17 +1416,19 @@ class Table:
         """
         Update specific columns in rows matching ALL conditions.
         Requires at least one WHERE condition.
- 
-        assignments: list of (column, value) tuples
+
+        assignments: list of (column, value) tuples. If a value is a dict
+        with type "arithmetic", it is resolved per row against that row's
+        current value (e.g. salary = salary + 5000).
         conditions:  list of condition dicts for Expression.evaluate
         db:          optional database reference for FK and CASCADE
- 
+
         Enforces types, NOT NULL, UNIQUE, composite UNIQUE, CHECK, FK constraints.
         Applies DEFAULT values if assignment value is None and default exists.
         Triggers ON UPDATE CASCADE on child tables if db is provided.
         Rewrites the .db file after updates via pager.
         Rebuilds all active B-Tree indexes after rewrite.
- 
+
         Returns the number of rows updated.
         """
         if not conditions:
@@ -1354,17 +1436,28 @@ class Table:
                 "UPDATE requires at least one WHERE condition. "
                 "Full table updates are not supported yet."
             )
- 
+
         column_index = self._build_column_index()
         column_types = {name: ctype for name, ctype in self.columns}
- 
+        numeric_types_for_arithmetic = ("int", "bigint", "float", "decimal", "money", "smallint", "tinyint")
+
         for col, value in assignments:
             if col not in column_index:
                 raise ValueError(f"Column '{col}' does not exist.")
- 
+
+            if isinstance(value, dict) and value.get("type") == "arithmetic":
+                column_type = column_types[col]
+                base_type = column_type.split("(")[0]
+                if base_type not in numeric_types_for_arithmetic:
+                    raise ValueError(
+                        f"Arithmetic SET is only supported on numeric columns, "
+                        f"got '{column_type}' for column '{col}'."
+                    )
+                continue
+
             if value is None and col in self.default_values:
                 value = self.default_values[col]
- 
+
             column_type = column_types[col]
             base_type = column_type.split("(")[0]
             expected_python_type = self.SUPPORTED_TYPES.get(base_type)
@@ -1381,6 +1474,11 @@ class Table:
                         f"Column '{col}' expects valid JSON, got {value!r}."
                     )
 
+            if value is not None and col in self.custom_type_columns and db is not None:
+                db.validate_composite_value(
+                    self.custom_type_columns[col], json.loads(value)
+                )
+
             if value is not None and base_type == "xml":
                 try:
                     ET.fromstring(value)
@@ -1388,13 +1486,11 @@ class Table:
                     raise ValueError(
                         f"Column '{col}' expects valid XML, got {value!r}."
                     )
-                
+
             if value is not None and base_type == "smallint" and not (-32768 <= value <= 32767):
                 raise ValueError(f"Value {value} out of range for smallint.")
             if value is not None and base_type == "tinyint" and not (-128 <= value <= 127):
                 raise ValueError(f"Value {value} out of range for tinyint.")
-                
-
 
             if value is not None and base_type == "enum":
                 allowed = self._enum_values(column_type)
@@ -1402,7 +1498,7 @@ class Table:
                     raise ValueError(
                         f"Column '{col}' expects one of {allowed}, got {value!r}."
                     )
-                
+
             if value is not None and base_type in ("uuid", "uniqueidentifier"):
                 try:
                     uuid.UUID(value)
@@ -1410,34 +1506,59 @@ class Table:
                     raise ValueError(
                         f"Column '{col}' expects a valid UUID, got {value!r}."
                     )
- 
+
             if col == self.primary_key and value is None:
                 raise ValueError(
                     f"PRIMARY KEY column '{self.primary_key}' cannot be set to NULL."
                 )
- 
+
             if col in self.not_null_columns and value is None:
                 raise ValueError(f"Column '{col}' cannot be set to NULL.")
- 
+
         for condition in conditions:
             if condition.get("type") == "simple":
                 if condition["column"] not in column_index:
                     raise ValueError(
                         f"Column '{condition['column']}' does not exist."
                     )
- 
+
         updated_count = 0
         updated_rows  = []
         old_rows      = []
- 
+
         for row in self.rows:
             if self._matches_conditions(row, conditions, column_index):
                 new_row = list(row)
- 
+
                 for col, value in assignments:
-                    if value is None and col in self.default_values:
+                    if isinstance(value, dict) and value.get("type") == "arithmetic":
+                        current = row[column_index[col]]
+                        if current is None:
+                            raise ValueError(
+                                f"Cannot apply arithmetic update to NULL value in column '{col}'."
+                            )
+                        op        = value["op"]
+                        operand   = value["operand"]
+                        col_type  = column_types[col]
+                        base_type = col_type.split("(")[0]
+
+                        if base_type in ("decimal", "money") and not isinstance(operand, Decimal):
+                            operand = Decimal(str(operand))
+
+                        if op == "+": value = current + operand
+                        elif op == "-": value = current - operand
+                        elif op == "*": value = current * operand
+                        elif op == "/": value = current / operand
+                        elif op == "%": value = current % operand
+
+                        if base_type == "smallint" and not (-32768 <= value <= 32767):
+                            raise ValueError(f"Value {value} out of range for smallint.")
+                        if base_type == "tinyint" and not (-128 <= value <= 127):
+                            raise ValueError(f"Value {value} out of range for tinyint.")
+
+                    elif value is None and col in self.default_values:
                         value = self.default_values[col]
- 
+
                     if col in self.unique_columns:
                         idx = column_index[col]
                         for existing_row in self.rows:
@@ -1445,39 +1566,37 @@ class Table:
                                 raise ValueError(
                                     f"Duplicate value for UNIQUE column '{col}'."
                                 )
- 
-                    new_row[column_index[col]] = value
 
+                    new_row[column_index[col]] = value
 
                 for col_name, col_type in self.columns:
                     idx = column_index[col_name]
                     if idx < len(new_row) and new_row[idx] is not None:
                         base = col_type.split("(")[0]
                         if base == "decimal" and not isinstance(new_row[idx], Decimal):
-                           
+
                             scale = int(col_type[col_type.index(",")+1:col_type.index(")")])
                             quantizer = Decimal(10) ** -scale
                             new_row[idx] = Decimal(str(new_row[idx])).quantize(quantizer)
                         elif base == "money" and not isinstance(new_row[idx], Decimal):
                             new_row[idx] = Decimal(str(new_row[idx])).quantize(Decimal("0.01"))
- 
+
                 self._validate_composite_unique(new_row, exclude_row=row)
                 self._validate_check_constraints(new_row)
                 self._validate_foreign_keys(new_row, db)
- 
+
                 old_rows.append(row)
                 updated_rows.append(new_row)
                 updated_count += 1
             else:
                 updated_rows.append(row)
- 
+
         if updated_count > 0:
             self.pager.rewrite_all_rows(updated_rows)
             _, self.row_offsets = self.pager.load_all_rows()
 
             self.rows = updated_rows
- 
- 
+
             for col in self.index_manager.indexes:
                 if isinstance(col, str):
                     self.index_manager.rebuild(col, self.rows, column_index[col])
@@ -1486,11 +1605,11 @@ class Table:
                 key      = tuple(cols)
                 col_idxs = [column_index[c] for c in cols]
                 self.index_manager.rebuild_composite(key, self.rows, col_idxs)
-           
+
             for col in self.hash_indexes:
                 self.index_manager.rebuild_hash(col, self.rows, column_index[col])
 
             # Trigger CASCADE updates in child tables
             self._apply_cascade_update(old_rows, updated_rows[:updated_count], db)
- 
+
         return updated_count

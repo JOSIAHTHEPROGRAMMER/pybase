@@ -1,12 +1,12 @@
 from PyQt6.QtWidgets import (
-    QPlainTextEdit, QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem,
-     QHeaderView, QTabWidget
+    QPlainTextEdit, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
+     QHeaderView, QTabWidget, QPushButton, QFileDialog, QMessageBox
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import  QColor
+import csv
 
 from gui.widgets.font import get_mono_font
-
 BACKGROUND   = "#0f0f0f"
 PANEL        = "#1a1a1a"
 BORDER       = "#2e2e2e"
@@ -22,6 +22,8 @@ class ResultsPanel(QWidget):
         super().__init__()
         # db reference needed by ER diagram tab
         self.db = db
+        self._last_columns = []
+        self._last_rows = []
         self._build_ui()
 
     def _build_ui(self):
@@ -98,6 +100,36 @@ class ResultsPanel(QWidget):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.addStretch()
+
+        self.export_btn = QPushButton("Export CSV")
+        self.export_btn.setEnabled(False)
+        self.export_btn.setFixedHeight(28)
+        self.export_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: transparent;
+                color: {TEXT_MUTED};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                font-size: 12px;
+                padding: 0 14px;
+            }}
+            QPushButton:hover:enabled {{
+                border-color: {ACCENT};
+                color: {ACCENT};
+            }}
+            QPushButton:disabled {{
+                color: #555;
+                border-color: {BORDER};
+            }}
+        """)
+        self.export_btn.clicked.connect(self._export_csv)
+        toolbar.addWidget(self.export_btn)
+        layout.addLayout(toolbar)
 
         self.table = QTableWidget()
         self.table.setFont(get_mono_font(11))
@@ -223,6 +255,10 @@ class ResultsPanel(QWidget):
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
 
+        self._last_columns = columns
+        self._last_rows = rows
+        self.export_btn.setEnabled(bool(columns) and bool(rows))
+
         self.chart_panel.update_chart(columns, rows)
 
         if not columns or not rows:
@@ -250,3 +286,29 @@ class ResultsPanel(QWidget):
         Called after DDL operations so the ER diagram redraws.
         """
         self.er_panel.refresh()
+
+    def _export_csv(self):
+        """
+        Write the last displayed result set to a CSV file chosen by the user.
+        Button is disabled whenever there is nothing to export.
+        """
+        if not self._last_columns or not self._last_rows:
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Results to CSV", "results.csv", "CSV Files (*.csv)"
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(self._last_columns)
+                writer.writerows(self._last_rows)
+        except Exception as e:
+            error_box = QMessageBox(self)
+            error_box.setWindowTitle("Export Failed")
+            error_box.setText(f"Could not write CSV file: {e}")
+            error_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            error_box.exec()

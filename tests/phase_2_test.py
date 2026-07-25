@@ -6,11 +6,11 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from core.database import Database
-from cli import (
+from query.sql_parser import (
     parse_create_table, parse_insert, parse_select,
-    parse_delete, parse_update, parse_compact_table
+    parse_delete, parse_update,
 )
-from storage.pager import Pager
+
 from storage.page import PAGE_BODY_SIZE
 
 

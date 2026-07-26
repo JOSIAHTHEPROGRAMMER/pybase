@@ -164,6 +164,13 @@ pybase/
 
 ## Getting Started
 
+
+### Clone the repository:
+
+```bash
+git clone https://github.com/JOSIAHTHEPROGRAMMER/pybase.git
+```
+
 ### Requirements
 
 - Python 3.10+

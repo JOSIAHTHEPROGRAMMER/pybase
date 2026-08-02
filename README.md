@@ -481,3 +481,11 @@ python -m gui.main
 | Status Bar     | Green indicator when a transaction is active                                                                           |
 
 Clicking a table in the schema browser loads `SELECT * FROM table_name;` into the editor. Right clicking a table offers refresh, rename, truncate, compact, and drop, with confirmation dialogs on destructive actions. Right clicking or double clicking a column offers index creation and a column statistics window showing count, null count, min/max/avg for numeric columns, distinct count for other types, and a per-value breakdown for `ENUM` columns.
+
+
+---
+
+## Contributing
+
+Interested in contributing? Please read the [Contributing Guide](CONTRIBUTING.md) for development setup, coding standards, testing requirements, and the pull request process.
+
